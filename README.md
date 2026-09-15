@@ -3,10 +3,12 @@
 一隻在工具列上爬來爬去的螃蟹。**CPU / GPU 負載越高，牠就跑得越快、顏色也從青色越變越紅。**
 
 - 0% → 青色，慢慢晃、偶爾停下來吐泡泡
-- 50% → 橘黃色，穩定地橫著走
+- 50% → 黃綠色，穩定地橫著走
 - 100% → 全紅、腳踩得飛快，身上還會冒熱氣
 
-滑鼠移到螃蟹身上會顯示即時數值，**左鍵**戳牠會嚇跑牠（並固定顯示數值），**右鍵**或點系統匣圖示可以叫出選單。其他時候整個視窗都是穿透的，不會擋到你原本的工具列。
+滑鼠移到螃蟹身上會顯示即時數值，**左鍵**戳牠會嚇跑牠（並固定顯示數值），**右鍵**螃蟹或點右下角的小螃蟹圖示可以叫出選單。其他時候整個視窗都是穿透的，不會擋到你原本的工具列。
+
+右下角的小圖示也是一隻螃蟹，顏色一樣跟著負載從青色變紅色。
 
 ---
 
@@ -27,15 +29,25 @@ npm start
 npm run dist
 ```
 
-產生的 `dist\CrabMonitor <版本>.exe`（約 70 MB）是免安裝的可攜檔，複製到別台 Windows 電腦上雙擊就能跑，那台電腦不需要裝 Node 或任何東西。
+產生的 `dist\CrabMonitor <版本>.exe`（約 70 MB）是免安裝的可攜檔，複製到別台 Windows 電腦上雙擊就能跑，那台電腦不需要裝 Node 或任何東西。exe 的圖示就是螃蟹。
 
 > `build.electronDist` 特意指向 `node_modules/electron/dist`。electron-builder 預設會再去 GitHub 抓一份 115MB 的 Electron，而它的 8 執行緒分段下載器在某些網路環境會整個卡死（而且不會逾時重試）。`npm install` 早就把同版本抓好了，直接用現成的既快又不會卡。
+
+### 圖示
+
+exe 圖示 `build/icon.ico` 是從 `src/renderer/crab.js` 的畫法產生的，跟工具列上那隻是同一份。改了螃蟹長相之後重新產生：
+
+```bash
+npm run icon
+```
+
+32px 以下的尺寸會自動改用線條較粗、省略細節的畫法，否則在檔案總管的小圖示裡會糊成一團。
 
 ---
 
 ## 選單裡有什麼
 
-在系統匣的螃蟹圖示上點一下（或在螃蟹身上按右鍵）：
+右鍵點螃蟹，或點右下角的小螃蟹圖示：
 
 | 項目 | 說明 |
 | --- | --- |
@@ -43,9 +55,18 @@ npm run dist
 | 螃蟹大小 | 小 / 中 / 大 |
 | 顯示數值標籤 | 是否一直顯示頭上的數值氣泡（關掉的話滑鼠移過去才會出現） |
 | 顯示在螢幕 | 多螢幕時決定螃蟹要待在哪一台 |
+| 在桌面顯示螃蟹 | 關掉的話工具列上就不會有螃蟹，只剩右下角的小圖示 |
+| 在右下角顯示小圖示 | 關掉的話右下角就沒有圖示，選單改從螃蟹身上按右鍵叫出 |
 | 開機時自動啟動 | 登入 Windows 後自動跑起來 |
+| 溫度顯示 N/A？ | 說明為什麼沒有溫度，以及怎麼補上 |
 
 設定會存在 `%APPDATA%\crab-monitor\settings.json`。
+
+### 螃蟹和小圖示不能同時關掉
+
+這兩個是唯二能叫出選單的地方，全關掉就再也找不到設定了。所以只剩一個開著的時候，那一項會變成灰色並標示「至少要留一個」。
+
+萬一還是找不到（例如手動改壞了設定檔），**再執行一次 exe 就會把螃蟹和小圖示兩個都叫回來**，不會多開第二隻。
 
 ---
 
@@ -67,7 +88,7 @@ npm run dist
 你八成是在 **VS Code 的整合式終端機**裡跑的。VS Code 會設一個 `ELECTRON_RUN_AS_NODE=1` 環境變數並傳給子程序，它會讓 electron 退化成普通的 Node，`require('electron')` 就拿不到模組。清掉它再跑：
 
 ```powershell
-Remove-Item Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+$env:ELECTRON_RUN_AS_NODE = $null
 npm start
 ```
 
@@ -94,17 +115,24 @@ npm start
 ```
 src/
   main/
-    main.js        Electron 主程序：置頂穿透視窗、系統匣、設定
+    main.js        Electron 主程序：置頂穿透視窗、系統匣、選單、設定
     metrics.js     取樣邏輯（CPU 用純 JS，其餘交給 probe）
     probe.ps1      常駐的 PowerShell 取樣程序，每 2 秒吐一行 JSON
-    tray-icon.js   用程式畫出系統匣圖示，顏色同樣跟著負載走
+    tray-icon.js   備用的點陣系統匣圖示（Canvas 版還沒畫好或畫失敗時才用）
   preload/
     preload.js     contextBridge，只開放需要的幾個方法
   renderer/
     index.html
     style.css
-    crab.js        螃蟹的 Canvas 畫法（身體、螯、八隻腳、眼柄、熱氣）
+    crab.js        螃蟹的 Canvas 畫法（身體、螯、腳、眼柄、熱氣），也負責產生圖示
     app.js         移動邏輯、步伐節奏、數值標籤、滑鼠命中判定
+scripts/
+  make-icon.js     用 crab.js 產生 build/icon.ico
+build/
+  icon.ico         exe 圖示（16–256px）
+  icon.png         256px 預覽
 ```
 
 視窗是一條跨滿整個螢幕寬度、高 130px 的透明視窗，貼在螢幕最底部並用 `screen-saver` 層級蓋在工具列上方；平常整片 `setIgnoreMouseEvents(true)` 讓點擊穿透到工具列，只有游標真的壓在螃蟹身上時才短暫接管滑鼠。
+
+系統匣圖示會在螃蟹視窗載入後，用同一份 `crab.js` 一次畫好 21 種顏色（每 5% 一種）× 3 種解析度（16 / 24 / 32px）快取起來，所以跟工具列上的螃蟹長得一樣。

@@ -225,11 +225,25 @@ window.addEventListener('contextmenu', (e) => {
   if (overCrab(e.clientX, e.clientY)) window.crabAPI.showMenu()
 })
 
+// 游標直接離開視窗範圍時不會再有 mousemove，要在這裡把接管狀態還回去
+document.addEventListener('mouseleave', () => {
+  if (hovering) {
+    hovering = false
+    window.crabAPI.setInteractive(false)
+    document.body.classList.remove('hot')
+  }
+})
+
 // ---------------------------------------------------------------- 主程序來的資料
 
 window.crabAPI.onMetrics((data) => { metrics = data })
 window.crabAPI.onConfig((data) => {
   config = { ...config, ...data }
+  // 螃蟹被隱藏時主程序已經把穿透設回去了，這邊的狀態要跟著重置
+  if (config.showCrab === false) {
+    hovering = false
+    document.body.classList.remove('hot')
+  }
   resize()
 })
 window.crabAPI.onLayout(({ width, height }) => resize(width, height))

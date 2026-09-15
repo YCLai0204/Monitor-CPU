@@ -5,6 +5,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
+    "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win portable",
     "dist:dir": "electron-builder --dir"
   },
@@ -20,8 +21,7 @@
     "electronDist": "node_modules/electron/dist",
     "files": [
       "src/**/*",
-      "package.json",
-      "README.md"
+      "package.json"
     ],
     "extraResources": [
       {
@@ -30,6 +30,7 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "portable"
       ]

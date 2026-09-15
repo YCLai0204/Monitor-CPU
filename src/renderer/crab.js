@@ -8,6 +8,9 @@
  * 座標原點放在螃蟹的「腳底中心」，往上是負的。預設面向觀眾，
  * 靠橫向平移來走路（螃蟹本來就是橫著走）。
  *
+ * exe 圖示和系統匣圖示也是用這份畫法產生的（見 renderIcon），
+ * 所以改了這裡的長相，圖示會跟著一起變。
+ *
  * 這裡包在 IIFE 裡：兩支 <script> 共用同一個全域範圍，不包起來的話
  * 這邊的 drawCrab 會跟 app.js 解構出來的同名變數撞在一起。
  */
@@ -37,19 +40,24 @@ function drawCrab(ctx, opts) {
     phase = 0,
     speed = 0,
     dir = 1,
-    heat = 0,       // 0..1，越高越「燙」，會加上光暈與蒸氣
-    blink = 0,      // 0..1，1 = 完全閉眼
+    heat = 0,        // 0..1，越高越「燙」，會加上光暈與蒸氣
+    blink = 0,       // 0..1，1 = 完全閉眼
     time = 0,
+    pose = 'walk',   // 'icon'：左右對稱、完全靜止的站姿
+    detail = 'high', // 'low'：線條加粗、省略殼紋與嘴，給 16–32px 的小圖示用
+    shadow = true,
   } = opts
 
+  const st = { still: pose === 'icon', low: detail === 'low' }
   const col = palette(hue)
-  const bob = Math.sin(phase * 2) * 1.6 * Math.min(1, 0.35 + speed / 120)
-  const lean = dir * Math.min(1, speed / 220) * 0.09
+  const bob = st.still ? 0 : Math.sin(phase * 2) * 1.6 * Math.min(1, 0.35 + speed / 120)
+  const lean = st.still ? 0 : dir * Math.min(1, speed / 220) * 0.09
+  const look = st.still ? 0 : dir
 
   ctx.save()
   ctx.scale(scale, scale)
 
-  drawShadow(ctx, speed)
+  if (shadow) drawShadow(ctx, speed)
 
   ctx.save()
   ctx.translate(0, bob)
@@ -60,13 +68,13 @@ function drawCrab(ctx, opts) {
     ctx.shadowBlur = 8 + heat * 22
   }
 
-  drawLegs(ctx, -1, phase, col)
-  drawLegs(ctx, 1, phase, col)
-  drawClaw(ctx, -1, phase, speed, col)
-  drawClaw(ctx, 1, phase, speed, col)
-  drawBody(ctx, col)
+  drawLegs(ctx, -1, phase, col, st)
+  drawLegs(ctx, 1, phase, col, st)
+  drawClaw(ctx, -1, phase, speed, col, st)
+  drawClaw(ctx, 1, phase, speed, col, st)
+  drawBody(ctx, col, st)
   ctx.shadowBlur = 0
-  drawEyes(ctx, dir, blink, phase, col)
+  drawEyes(ctx, look, blink, phase, col, st)
 
   ctx.restore()
 
@@ -86,7 +94,7 @@ function drawShadow(ctx, speed) {
   ctx.restore()
 }
 
-function drawBody(ctx, col) {
+function drawBody(ctx, col, st) {
   const cx = 0
   const cy = -26
   const rx = 28
@@ -101,9 +109,11 @@ function drawBody(ctx, col) {
   ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2)
   ctx.fillStyle = grad
   ctx.fill()
-  ctx.lineWidth = 2
+  ctx.lineWidth = st.low ? 3.5 : 2
   ctx.strokeStyle = col.deep
   ctx.stroke()
+
+  if (st.low) return // 小圖示上殼紋、高光、嘴都只會糊成雜點
 
   // 殼上的紋路
   ctx.save()
@@ -141,21 +151,22 @@ function drawBody(ctx, col) {
   ctx.restore()
 }
 
-function drawLegs(ctx, side, phase, col) {
+function drawLegs(ctx, side, phase, col, st) {
   ctx.save()
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
 
-  for (let i = 0; i < LEGS_PER_SIDE; i++) {
-    // 左右兩側相位差 π，走起來才像交替踏步
+  const count = st.low ? 3 : LEGS_PER_SIDE
+  for (let i = 0; i < count; i++) {
+    // 左右兩側相位差 π，走起來才像交替踏步；靜止站姿則完全不擺動，左右才會對稱
     const p = phase + i * 0.8 + (side < 0 ? 0 : Math.PI)
-    const s = Math.sin(p)
+    const s = st.still ? 0 : Math.sin(p)
     const lift = Math.max(0, s)
 
-    // 往外扇開，四隻腳才分得出來（身體 rx 是 28，落點要明顯超過才看得到）
+    // 往外扇開，每隻腳才分得出來（身體 rx 是 28，落點要明顯超過才看得到）
     const hipX = side * (20 - i * 2)
-    const hipY = -32 + i * 3.5
-    const spread = 33 + i * 5
+    const hipY = st.low ? -30 + i * 6 : -32 + i * 3.5
+    const spread = st.low ? 30 + i * 7 : 33 + i * 5
     const footX = side * (spread + s * 5) // 擺幅壓在 5 以內，收腳時才不會縮到身體後面看不見
     const footY = -lift * 8
     const kneeX = side * (spread * 0.6)
@@ -165,8 +176,10 @@ function drawLegs(ctx, side, phase, col) {
     ctx.moveTo(hipX, hipY)
     ctx.quadraticCurveTo(kneeX, kneeY, footX, footY)
     ctx.strokeStyle = col.dark
-    ctx.lineWidth = 3.4 - i * 0.25
+    ctx.lineWidth = st.low ? 6.5 : 3.4 - i * 0.25
     ctx.stroke()
+
+    if (st.low) continue
 
     // 腳尖
     ctx.beginPath()
@@ -180,17 +193,19 @@ function drawLegs(ctx, side, phase, col) {
   ctx.restore()
 }
 
-function drawClaw(ctx, side, phase, speed, col) {
+function drawClaw(ctx, side, phase, speed, col, st) {
   // 跑越快、螯揮得越開；站著的時候會慢慢一開一合
-  const idle = (Math.sin(phase * 0.9 + (side < 0 ? 0 : 1.7)) + 1) / 2
-  const open = 0.12 + idle * 0.34 + Math.min(0.25, speed / 900)
+  const idle = st.still ? 0.7 : (Math.sin(phase * 0.9 + (side < 0 ? 0 : 1.7)) + 1) / 2
+  const open = st.still ? 0.42 : 0.12 + idle * 0.34 + Math.min(0.25, speed / 900)
 
+  const reach = st.low ? 36 : 40
   const shoulderX = side * 24
   const shoulderY = -36
-  const elbowX = side * 34
+  const elbowX = side * (reach - 6)
   const elbowY = -46 - idle * 3
-  const handX = side * 40
+  const handX = side * reach
   const handY = -54 - idle * 5
+  const edge = st.low ? 2.4 : 1.6
 
   ctx.save()
   ctx.lineCap = 'round'
@@ -201,7 +216,7 @@ function drawClaw(ctx, side, phase, speed, col) {
   ctx.moveTo(shoulderX, shoulderY)
   ctx.quadraticCurveTo(elbowX, elbowY, handX, handY)
   ctx.strokeStyle = col.dark
-  ctx.lineWidth = 4.5
+  ctx.lineWidth = st.low ? 7 : 4.5
   ctx.stroke()
 
   // 螯
@@ -215,57 +230,57 @@ function drawClaw(ctx, side, phase, speed, col) {
     ctx.ellipse(len * 0.45, 0, len * 0.5, thick, 0, 0, Math.PI * 2)
     ctx.fillStyle = col.base
     ctx.fill()
-    ctx.lineWidth = 1.6
+    ctx.lineWidth = edge
     ctx.strokeStyle = col.deep
     ctx.stroke()
     ctx.restore()
   }
 
-  jaw(side * open, 16, 5.5)
-  jaw(side * -open * 0.8, 14, 4.2)
+  jaw(side * open, st.low ? 17 : 16, st.low ? 7.5 : 5.5)
+  jaw(side * -open * 0.8, st.low ? 15 : 14, st.low ? 6 : 4.2)
 
   // 螯的根部
   ctx.beginPath()
-  ctx.ellipse(0, 0, 7, 6, 0, 0, Math.PI * 2)
+  ctx.ellipse(0, 0, st.low ? 8.5 : 7, st.low ? 7.5 : 6, 0, 0, Math.PI * 2)
   ctx.fillStyle = col.base
   ctx.fill()
-  ctx.lineWidth = 1.6
+  ctx.lineWidth = edge
   ctx.strokeStyle = col.deep
   ctx.stroke()
 
   ctx.restore()
 }
 
-function drawEyes(ctx, dir, blink, phase, col) {
-  const sway = Math.sin(phase * 1.4) * 0.8
+function drawEyes(ctx, look, blink, phase, col, st) {
+  const sway = st.still ? 0 : Math.sin(phase * 1.4) * 0.8
+  const r = st.low ? 7 : 5
 
   for (const side of [-1, 1]) {
-    const baseX = side * 9
+    const baseX = side * (st.low ? 10 : 9)
     const baseY = -38
-    const topX = baseX + sway * side * 0.4 + dir * 1.5
+    const topX = baseX + sway * side * 0.4 + look * 1.5
     const topY = -56
 
     ctx.beginPath()
     ctx.moveTo(baseX, baseY)
-    ctx.quadraticCurveTo(baseX + dir * 1.5, -48, topX, topY)
+    ctx.quadraticCurveTo(baseX + look * 1.5, -48, topX, topY)
     ctx.strokeStyle = col.dark
-    ctx.lineWidth = 3.2
+    ctx.lineWidth = st.low ? 5 : 3.2
     ctx.lineCap = 'round'
     ctx.stroke()
 
-    const r = 5
     ctx.beginPath()
     ctx.ellipse(topX, topY, r, r * (1 - blink * 0.85), 0, 0, Math.PI * 2)
     ctx.fillStyle = '#fdfdff'
     ctx.fill()
-    ctx.lineWidth = 1.4
+    ctx.lineWidth = st.low ? 2 : 1.4
     ctx.strokeStyle = col.deep
     ctx.stroke()
 
     if (blink < 0.6) {
       ctx.beginPath()
       // 瞳孔往前進方向看
-      ctx.ellipse(topX + dir * 1.8, topY, 2.1, 2.4 * (1 - blink), 0, 0, Math.PI * 2)
+      ctx.ellipse(topX + look * 1.8, topY, st.low ? 3.2 : 2.1, (st.low ? 3.4 : 2.4) * (1 - blink), 0, 0, Math.PI * 2)
       ctx.fillStyle = '#16181d'
       ctx.fill()
     }
@@ -308,5 +323,71 @@ function drawBubbles(ctx, bubbles, scale) {
   ctx.restore()
 }
 
-window.CrabArt = { drawCrab, drawBubbles, loadToHue, palette }
+// ---------------------------------------------------------------- 圖示
+
+const boundsCache = {}
+
+/** 實際畫一次再掃 alpha 求外框，改了螃蟹長相後圖示的置中與縮放會自動跟上。 */
+function artBounds(detail) {
+  if (boundsCache[detail]) return boundsCache[detail]
+
+  const S = 4
+  const W = 160 * S
+  const H = 120 * S
+  const ox = W / 2
+  const oy = H * 0.8
+  const c = document.createElement('canvas')
+  c.width = W
+  c.height = H
+  const ctx = c.getContext('2d')
+  ctx.translate(ox, oy)
+  drawCrab(ctx, { scale: S, pose: 'icon', detail, shadow: false })
+
+  const { data } = ctx.getImageData(0, 0, W, H)
+  let minX = W
+  let minY = H
+  let maxX = -1
+  let maxY = -1
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (data[(y * W + x) * 4 + 3] > 8) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+
+  const bounds = {
+    left: (minX - ox) / S,
+    right: (maxX + 1 - ox) / S,
+    top: (minY - oy) / S,
+    bottom: (maxY + 1 - oy) / S,
+  }
+  boundsCache[detail] = bounds
+  return bounds
+}
+
+/**
+ * 把靜止站姿的螃蟹畫成 size×size 的 PNG data URL。
+ * 32px 以下自動改用低細節畫法，否則細線會糊成一團。
+ */
+function renderIcon(size, hue = 186, detail = size <= 32 ? 'low' : 'high') {
+  const b = artBounds(detail)
+  const w = b.right - b.left
+  const h = b.bottom - b.top
+  const pad = size <= 32 ? 0 : size * 0.04 // 小圖示一個像素都不浪費
+  const s = (size - pad * 2) / Math.max(w, h)
+
+  const c = document.createElement('canvas')
+  c.width = size
+  c.height = size
+  const ctx = c.getContext('2d')
+  ctx.translate(size / 2 - ((b.left + b.right) / 2) * s, size / 2 - ((b.top + b.bottom) / 2) * s)
+  drawCrab(ctx, { scale: s, hue, pose: 'icon', detail, shadow: false })
+  return c.toDataURL('image/png')
+}
+
+window.CrabArt = { drawCrab, drawBubbles, loadToHue, palette, renderIcon }
 })()

@@ -1,27 +1,41 @@
 'use strict'
 
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, shell, dialog, nativeImage } = require('electron')
+const { execFile } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 
 const { Metrics } = require('./metrics')
 const { createCrabIcon } = require('./tray-icon')
 
+const APP_NAME = 'Monitor-CPU'
+// 改名前用過的設定資料夾；新資料夾還沒有設定檔時，會從這裡複製一份過來
+const LEGACY_DATA_DIRS = ['crab-monitor']
+
+// 設定資料夾固定叫 Monitor-CPU，不隨 package.json 的 name 或打包工具的預設而變。
+// 單一執行個體鎖也是跟著這個資料夾走，所以要在 requestSingleInstanceLock 之前設定。
+app.setName(APP_NAME)
+app.setPath('userData', path.join(app.getPath('appData'), APP_NAME))
+
 const BAR_HEIGHT = 130 // 視窗高度：螃蟹 + 上方的數值氣泡
 
 const DEFAULTS = {
-  source: 'cpu',      // 'cpu' | 'gpu' | 'max'
+  source: 'cpu',          // 'cpu' | 'gpu' | 'max'
   showLabel: true,
   scale: 1,
-  displayId: null,    // null = 主螢幕
+  displayId: null,        // null = 主螢幕
   startOnLogin: false,
-  showCrab: true,     // 在桌面（工具列上）顯示螃蟹
-  showTray: true,     // 在右下角系統匣顯示小圖示
+  showCrab: true,         // 在桌面（工具列上）顯示螃蟹
+  showTray: true,         // 在右下角系統匣顯示小圖示
+  promotedTrayPaths: [],  // 已經自動設成「直接顯示在右下角」過的 exe 路徑
 }
 
 // 系統匣圖示每 5% 一種顏色；Windows 在 100% / 150% / 200% 縮放下分別要 16 / 24 / 32px
 const TRAY_BUCKETS = Array.from({ length: 21 }, (_, i) => i * 5)
 const TRAY_SCALES = [[1, 16], [1.5, 24], [2, 32]]
+
+// 圖示第一次出現後 Explorer 才會建立它的紀錄，所以分幾次、越等越久去找
+const PROMOTE_RETRY_MS = [1500, 3000, 6000, 12000, 20000]
 
 let win = null
 let tray = null
@@ -30,11 +44,27 @@ let config = { ...DEFAULTS }
 let lastIconLoad = -1
 let currentLoad = 0
 let interactive = false
+let promoteTimer = null
 const trayIcons = new Map()
 
 const configPath = () => path.join(app.getPath('userData'), 'settings.json')
 
+function migrateLegacySettings() {
+  if (fs.existsSync(configPath())) return
+  for (const dir of LEGACY_DATA_DIRS) {
+    const legacy = path.join(app.getPath('appData'), dir, 'settings.json')
+    if (!fs.existsSync(legacy)) continue
+    try {
+      fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+      // 用複製不用搬移：舊版 exe 如果還在用，它的設定不會不見
+      fs.copyFileSync(legacy, configPath())
+    } catch (_) { /* 搬不過來就用預設值 */ }
+    return
+  }
+}
+
 function loadConfig() {
+  migrateLegacySettings()
   try {
     const raw = JSON.parse(fs.readFileSync(configPath(), 'utf8'))
     config = { ...DEFAULTS, ...raw }
@@ -176,10 +206,71 @@ function refreshTrayIcon(load) {
 function createTray() {
   lastIconLoad = -1
   tray = new Tray(trayImage(bucketOf(currentLoad)))
-  tray.setToolTip('螃蟹監視器')
+  tray.setToolTip(APP_NAME)
   tray.setContextMenu(buildMenu())
   tray.on('click', () => tray.popUpContextMenu())
   refreshTrayIcon(currentLoad)
+
+  clearTimeout(promoteTimer)
+  promoteTimer = setTimeout(() => promoteTrayIcon(0), PROMOTE_RETRY_MS[0])
+}
+
+function destroyTray() {
+  clearTimeout(promoteTimer)
+  if (tray) tray.destroy()
+  tray = null
+}
+
+// ---------------------------------------------------------------- 右下角直接顯示
+
+/**
+ * Windows 11 預設把新程式的系統匣圖示收進 ^ 箭頭裡，要使用者自己到
+ * 「設定 → 個人化 → 工作列 → 其他系統匣圖示」打開。那個開關其實就是
+ * HKCU\Control Panel\NotifyIconSettings\<id> 底下的 IsPromoted，
+ * 每筆紀錄用 ExecutablePath 對應到 exe。
+ *
+ * 每個 exe 位置只自動打開一次：之後使用者若在 Windows 設定裡把它收回去，
+ * 就尊重他的選擇。Windows 10 用的是另一種二進位格式，找不到紀錄就放棄。
+ *
+ * exe 路徑用環境變數傳進去，使用者名稱是中文的電腦也不會有編碼問題。
+ */
+const PROMOTE_TRAY_PS = [
+  "$ErrorActionPreference = 'SilentlyContinue'",
+  '$exe = $env:MONITOR_CPU_EXE',
+  "$result = 'notfound'",
+  "foreach ($key in Get-ChildItem 'HKCU:\\Control Panel\\NotifyIconSettings') {",
+  '  $p = Get-ItemProperty $key.PSPath',
+  '  if ($p.ExecutablePath -and $p.ExecutablePath -eq $exe) {',
+  "    if ($p.IsPromoted -eq 1) { if ($result -eq 'notfound') { $result = 'already' } }",
+  "    else { Set-ItemProperty $key.PSPath -Name IsPromoted -Value 1 -Type DWord; $result = 'promoted' }",
+  '  }',
+  '}',
+  '$result',
+].join('\n')
+
+function promoteTrayIcon(attempt) {
+  if (process.platform !== 'win32' || !tray) return
+  const exe = process.execPath
+  if ((config.promotedTrayPaths || []).some((p) => p.toLowerCase() === exe.toLowerCase())) return
+
+  execFile(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(PROMOTE_TRAY_PS, 'utf16le').toString('base64')],
+    { windowsHide: true, timeout: 15000, env: { ...process.env, MONITOR_CPU_EXE: exe } },
+    (_err, stdout) => {
+      const result = String(stdout || '').trim()
+      if (result === 'promoted' || result === 'already') {
+        update({ promotedTrayPaths: [...(config.promotedTrayPaths || []), exe] })
+        // 剛改好的話重新掛一次圖示，Explorer 重新登記時就會照新設定直接顯示
+        if (result === 'promoted' && tray) {
+          destroyTray()
+          createTray()
+        }
+      } else if (attempt + 1 < PROMOTE_RETRY_MS.length) {
+        promoteTimer = setTimeout(() => promoteTrayIcon(attempt + 1), PROMOTE_RETRY_MS[attempt + 1])
+      }
+    }
+  )
 }
 
 // ---------------------------------------------------------------- 顯示開關
@@ -205,12 +296,8 @@ function applyCrabVisibility() {
 }
 
 function applyTrayVisibility() {
-  if (config.showTray && !tray) {
-    createTray()
-  } else if (!config.showTray && tray) {
-    tray.destroy()
-    tray = null
-  }
+  if (config.showTray && !tray) createTray()
+  else if (!config.showTray && tray) destroyTray()
 }
 
 /** 螃蟹與系統匣圖示是唯二能叫出選單的地方，所以不允許兩個同時關掉。 */
@@ -234,7 +321,7 @@ function buildMenu() {
   const trayLocked = config.showTray && !config.showCrab
 
   return Menu.buildFromTemplate([
-    { label: '🦀 螃蟹監視器', enabled: false },
+    { label: APP_NAME, enabled: false },
     { type: 'separator' },
     {
       label: '監看來源',
@@ -304,7 +391,7 @@ function buildMenu() {
 async function showTemperatureHelp() {
   const { response } = await dialog.showMessageBox({
     type: 'info',
-    title: '螃蟹監視器',
+    title: APP_NAME,
     message: '為什麼溫度顯示 N/A？',
     detail:
       'Windows 本身沒有提供通用的 CPU / GPU 溫度介面。筆電通常讀得到，' +
@@ -313,7 +400,7 @@ async function showTemperatureHelp() {
       '1. 下載並執行 LibreHardwareMonitor（免費開源）\n' +
       '2. 在 Options 勾選「WMI Provider」\n' +
       '3. 讓它留在背景執行\n\n' +
-      '螃蟹會自動偵測到，約 2 秒後就會出現溫度，不需要重開。\n' +
+      '會自動偵測到，約 2 秒後就會出現溫度，不需要重開。\n' +
       '使用率不受影響，沒裝也一樣正常運作。',
     buttons: ['開啟 LibreHardwareMonitor 下載頁', '關閉'],
     defaultId: 1,

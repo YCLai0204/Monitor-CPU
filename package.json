@@ -1,0 +1,38 @@
+{
+  "name": "crab-monitor",
+  "version": "1.0.0",
+  "description": "一隻在工具列上爬來爬去的螃蟹，會隨著 CPU / GPU 負載越跑越快、越變越紅。",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable",
+    "dist:dir": "electron-builder --dir"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.local.crabmonitor",
+    "productName": "CrabMonitor",
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "src/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "extraResources": [
+      {
+        "from": "src/main/probe.ps1",
+        "to": "probe.ps1"
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
+  }
+}

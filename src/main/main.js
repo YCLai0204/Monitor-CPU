@@ -25,7 +25,8 @@ const DEFAULTS = {
   scale: 1,
   displayId: null,        // null = 主螢幕
   startOnLogin: false,
-  showCrab: true,         // 在桌面（工具列上）顯示螃蟹
+  mascot: 'crab',         // 'crab' | 'bird'（搖頭小鳥）
+  showCrab: true,         // 在桌面（工具列上）顯示吉祥物
   showTray: true,         // 在右下角系統匣顯示小圖示
   promotedTrayPaths: [],  // 已經自動設成「直接顯示在右下角」過的 exe 路徑
 }
@@ -33,6 +34,9 @@ const DEFAULTS = {
 // 系統匣圖示每 5% 一種顏色；Windows 在 100% / 150% / 200% 縮放下分別要 16 / 24 / 32px
 const TRAY_BUCKETS = Array.from({ length: 21 }, (_, i) => i * 5)
 const TRAY_SCALES = [[1, 16], [1.5, 24], [2, 32]]
+// 小鳥的系統匣圖示是搖頭動畫：一個搖頭週期畫成幾張，依負載換張的速度
+const BIRD_FRAMES = 8
+const BIRD_CYCLES_PER_SEC = [0.6, 2.5] // 0% 與 100% 負載時每秒搖幾個週期
 
 // 圖示第一次出現後 Explorer 才會建立它的紀錄，所以分幾次、越等越久去找
 const PROMOTE_RETRY_MS = [1500, 3000, 6000, 12000, 20000]
@@ -48,6 +52,9 @@ let expanded = false // 拖曳中：視窗展開成涵蓋所有螢幕
 let layout = null // 最後一次算出的視窗尺寸與工具列高度；renderer 太晚載入來不及收 layout 事件時主動來問
 let promoteTimer = null
 const trayIcons = new Map()
+const birdIcons = []
+let birdFrame = 0
+let birdTimer = null
 
 const configPath = () => path.join(app.getPath('userData'), 'settings.json')
 
@@ -188,7 +195,7 @@ function createWindow() {
     win.webContents.send('config', config)
     applyCrabVisibility()
     prepareTrayIcons()
-      .then(() => { lastIconLoad = -1; refreshTrayIcon(currentLoad) })
+      .then(() => applyTrayMascot())
       .catch((err) => console.error('[tray] 畫系統匣圖示失敗，繼續使用備用圖示：', err))
   })
 }
@@ -204,19 +211,26 @@ function createWindow() {
 async function prepareTrayIcons() {
   const sizes = TRAY_SCALES.map(([, px]) => px)
   const script = `(() => {
-    const out = {}
+    const crab = {}
     for (const b of ${JSON.stringify(TRAY_BUCKETS)}) {
       const hue = window.CrabArt.loadToHue(b)
-      out[b] = ${JSON.stringify(sizes)}.map((px) => window.CrabArt.renderIcon(px, hue))
+      crab[b] = ${JSON.stringify(sizes)}.map((px) => window.CrabArt.renderIcon(px, hue))
     }
-    return out
+    const bird = []
+    for (let i = 0; i < ${BIRD_FRAMES}; i++) {
+      bird.push(${JSON.stringify(sizes)}.map((px) => window.BirdArt.renderIcon(px, i / ${BIRD_FRAMES})))
+    }
+    return { crab, bird }
   })()`
-  const urls = await withTimeout(win.webContents.executeJavaScript(script), 5000)
-  for (const b of TRAY_BUCKETS) {
+  const { crab, bird } = await withTimeout(win.webContents.executeJavaScript(script), 5000)
+  const toImage = (urls) => {
     const img = nativeImage.createEmpty()
-    TRAY_SCALES.forEach(([scaleFactor], i) => img.addRepresentation({ scaleFactor, dataURL: urls[b][i] }))
-    trayIcons.set(b, img)
+    TRAY_SCALES.forEach(([scaleFactor], i) => img.addRepresentation({ scaleFactor, dataURL: urls[i] }))
+    return img
   }
+  for (const b of TRAY_BUCKETS) trayIcons.set(b, toImage(crab[b]))
+  birdIcons.length = 0
+  bird.forEach((urls) => birdIcons.push(toImage(urls)))
 }
 
 function bucketOf(load) {
@@ -228,11 +242,39 @@ function trayImage(bucket) {
 }
 
 function refreshTrayIcon(load) {
-  if (!tray) return
+  if (!tray || config.mascot === 'bird') return // 小鳥用計時器換張，不跟著顏色
   const bucket = bucketOf(load)
   if (bucket === lastIconLoad) return
   lastIconLoad = bucket
   tray.setImage(trayImage(bucket))
+}
+
+/** 小鳥搖頭：一張接一張換，負載越高換得越快。 */
+function tickBirdIcon() {
+  clearTimeout(birdTimer)
+  birdTimer = null
+  if (!tray || config.mascot !== 'bird') return
+  if (birdIcons.length) {
+    birdFrame = (birdFrame + 1) % birdIcons.length
+    tray.setImage(birdIcons[birdFrame])
+  }
+  const t = Math.max(0, Math.min(1, currentLoad / 100))
+  const [slow, fast] = BIRD_CYCLES_PER_SEC
+  const cyclesPerSec = slow + (fast - slow) * t
+  birdTimer = setTimeout(tickBirdIcon, Math.round(1000 / (cyclesPerSec * BIRD_FRAMES)))
+}
+
+/** 換吉祥物、或系統匣重新建立後，讓圖示回到對的樣子。 */
+function applyTrayMascot() {
+  clearTimeout(birdTimer)
+  birdTimer = null
+  if (!tray) return
+  if (config.mascot === 'bird') {
+    tickBirdIcon()
+  } else {
+    lastIconLoad = -1
+    refreshTrayIcon(currentLoad)
+  }
 }
 
 function createTray() {
@@ -241,7 +283,7 @@ function createTray() {
   tray.setToolTip(APP_NAME)
   tray.setContextMenu(buildMenu())
   tray.on('click', () => tray.popUpContextMenu())
-  refreshTrayIcon(currentLoad)
+  applyTrayMascot()
 
   clearTimeout(promoteTimer)
   promoteTimer = setTimeout(() => promoteTrayIcon(0), PROMOTE_RETRY_MS[0])
@@ -249,6 +291,8 @@ function createTray() {
 
 function destroyTray() {
   clearTimeout(promoteTimer)
+  clearTimeout(birdTimer)
+  birdTimer = null
   if (tray) tray.destroy()
   tray = null
 }
@@ -365,7 +409,14 @@ function buildMenu() {
       ],
     },
     {
-      label: '螃蟹大小',
+      label: '吉祥物',
+      submenu: [
+        mkRadio('螃蟹', 'mascot', 'crab'),
+        mkRadio('搖頭小鳥', 'mascot', 'bird'),
+      ],
+    },
+    {
+      label: '大小',
       submenu: [
         mkRadio('小', 'scale', 0.75),
         mkRadio('中', 'scale', 1),
@@ -389,7 +440,7 @@ function buildMenu() {
     },
     { type: 'separator' },
     {
-      label: crabLocked ? '在桌面顯示螃蟹（至少要留一個）' : '在桌面顯示螃蟹',
+      label: crabLocked ? '在桌面顯示吉祥物（至少要留一個）' : '在桌面顯示吉祥物',
       type: 'checkbox',
       checked: config.showCrab,
       enabled: !crabLocked,
@@ -457,6 +508,7 @@ function update(patch) {
   saveConfig()
   if (win && !win.isDestroyed()) win.webContents.send('config', config)
   if (tray) tray.setContextMenu(buildMenu())
+  if ('mascot' in patch) applyTrayMascot()
 }
 
 function pickLoad(state) {

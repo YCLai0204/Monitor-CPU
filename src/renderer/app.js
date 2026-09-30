@@ -1,6 +1,7 @@
 'use strict'
 
 const { drawCrab, drawBubbles, loadToHue } = window.CrabArt
+const { drawBird } = window.BirdArt
 
 const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
@@ -10,11 +11,15 @@ const GRAVITY = 2200       // px/s²，放開後的下墜加速度
 const DRAG_THRESHOLD = 4   // 游標移動超過這麼多 px 才算拖曳，否則當成單擊
 const CRAB_HALF_W = 58     // scale=1 時大約的半寬（含張開的腳與螯），用來判斷邊界與滑鼠命中
 const CRAB_TOP = 68        // scale=1 時從腳底往上的高度
+const BIRD_HALF_W = 44     // 小鳥的半寬與高度（高度含飛起來時離地的部分）
+const BIRD_TOP = 92
+const FLY_ON = 60          // 負載到這個程度小鳥改成展翅飛
+const FLY_OFF = 50         // 掉到這個程度才落地走路，避免在門檻附近一直切換
 const MIN_SPEED = 10       // px/s，0% 負載
 const MAX_SPEED = 320      // px/s，100% 負載
 const STRIDE = 26          // 走幾 px 算一個步伐週期
 
-let config = { source: 'cpu', showLabel: true, scale: 1 }
+let config = { source: 'cpu', showLabel: true, scale: 1, mascot: 'crab' }
 let metrics = { cpu: { load: 0, temp: null }, gpu: { load: null, temp: null }, load: 0 }
 
 let viewW = window.innerWidth
@@ -34,6 +39,9 @@ const actor = {
   dir: 1,
   speed: 0,
   phase: 0,
+  bob: 0,                  // 小鳥搖頭的相位（弧度）
+  flap: 0,                 // 小鳥拍翅膀的相位
+  flying: false,
   pause: 0,
   blink: 0,
   nextBlink: 2 + Math.random() * 4,
@@ -47,6 +55,18 @@ let suppressClick = false
 let lastT = performance.now()
 
 // ---------------------------------------------------------------- 尺寸
+
+function isBird() {
+  return config.mascot === 'bird'
+}
+
+function halfW() {
+  return (isBird() ? BIRD_HALF_W : CRAB_HALF_W) * config.scale
+}
+
+function topH() {
+  return (isBird() ? BIRD_TOP : CRAB_TOP) * config.scale
+}
 
 function groundY() {
   return cur.ground
@@ -102,7 +122,7 @@ function resize(w, h) {
   canvas.style.width = `${viewW}px`
   canvas.style.height = `${viewH}px`
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  actor.x = Math.min(actor.x, cur.right - CRAB_HALF_W * config.scale)
+  actor.x = Math.min(actor.x, cur.right - halfW())
 }
 
 window.addEventListener('resize', () => resize())
@@ -121,7 +141,13 @@ function frame(now) {
 function step(dt) {
   const load = clamp(metrics.load || 0, 0, 100)
   const scale = config.scale
-  const margin = CRAB_HALF_W * scale + 6
+  const margin = halfW() + 6
+
+  // 小鳥一直在搖頭，負載越高搖越快（每秒約 1.3 下到 8.8 下）
+  actor.bob += dt * Math.PI * 2 * (1.3 + 7.5 * Math.pow(load / 100, 1.1))
+  if (load >= FLY_ON) actor.flying = true
+  else if (load < FLY_OFF) actor.flying = false
+  if (actor.flying || actor.lift > 0) actor.flap += dt * (9 + load * 0.16)
 
   // 被抓住或在空中：不走路，腳亂蹬
   if (drag && drag.moved) {
@@ -222,6 +248,23 @@ function render(now) {
   ctx.save()
   ctx.translate(actor.x, groundY() - actor.lift)
 
+  if (isBird()) {
+    drawBird(ctx, {
+      scale,
+      phase: actor.phase,
+      bob: actor.bob,
+      flap: actor.flap,
+      speed: actor.speed,
+      dir: actor.dir,
+      flying: actor.flying || actor.lift > 0,
+      heat: clamp((load - 55) / 45, 0, 1),
+      blink: actor.blink,
+      time: now,
+    })
+    ctx.restore()
+    return
+  }
+
   if (bubbles.length) drawBubbles(ctx, bubbles, scale)
 
   drawCrab(ctx, {
@@ -261,7 +304,7 @@ function updateLabel() {
 
   const w = label.offsetWidth || 120
   const lx = Math.max(cur.left + 6, Math.min(cur.right - w - 6, actor.x - w / 2))
-  const ly = Math.max(2, groundY() - actor.lift - CRAB_TOP * config.scale - 26)
+  const ly = Math.max(2, groundY() - actor.lift - topH() - 26 + (isBird() && !actor.flying ? 18 : 0))
   label.style.transform = `translate(${Math.round(lx)}px, ${Math.round(ly)}px)`
   label.classList.add('visible')
 }
@@ -280,9 +323,9 @@ function fmt(v, unit) {
 function overCrab(px, py) {
   const scale = config.scale
   const feet = groundY() - actor.lift
-  const halfW = CRAB_HALF_W * scale
-  const top = feet - CRAB_TOP * scale
-  return px >= actor.x - halfW && px <= actor.x + halfW && py >= top && py <= feet + 4
+  const hw = halfW()
+  const top = feet - topH()
+  return px >= actor.x - hw && px <= actor.x + hw && py >= top && py <= feet + 4
 }
 
 function setHover(over) {
@@ -313,10 +356,10 @@ window.addEventListener('mousemove', (e) => {
       window.crabAPI.setExpanded(true)
     }
     if (drag.moved) {
-      const margin = CRAB_HALF_W * config.scale + 6
+      const margin = halfW() + 6
       const x = clamp(e.clientX - drag.dx, margin, viewW - margin)
       // 頭頂最高抬到視窗頂端；螃蟹在哪台螢幕上，就以那台的工具列上緣當地面
-      const top = CRAB_TOP * config.scale + 4
+      const top = topH() + 4
       const rawFeet = Math.max(top, e.clientY - drag.dy)
       actor.x = x
       cur = displayAt(x, rawFeet)
@@ -335,7 +378,7 @@ window.addEventListener('mouseup', (e) => {
   drag = null
   if (!moved) return
   // 落在螢幕邊緣或縫隙時，收進所在螢幕的範圍內
-  const margin = CRAB_HALF_W * config.scale + 6
+  const margin = halfW() + 6
   actor.x = clamp(actor.x, cur.left + margin, cur.right - margin)
   if (actor.lift <= 0) {
     actor.lift = 0

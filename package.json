@@ -21,6 +21,7 @@
     "electronDist": "node_modules/electron/dist",
     "files": [
       "src/**/*",
+      "!src/public/**",
       "package.json"
     ],
     "extraResources": [

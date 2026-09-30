@@ -17,7 +17,7 @@ const LEGACY_DATA_DIRS = ['crab-monitor']
 app.setName(APP_NAME)
 app.setPath('userData', path.join(app.getPath('appData'), APP_NAME))
 
-const BAR_HEIGHT = 130 // 視窗高度：螃蟹 + 上方的數值氣泡
+const BAR_HEIGHT = 360 // 視窗高度：螃蟹 + 上方的數值氣泡 + 被拖起來時可以抬高的空間
 
 const DEFAULTS = {
   source: 'cpu',          // 'cpu' | 'gpu' | 'max'
@@ -44,6 +44,8 @@ let config = { ...DEFAULTS }
 let lastIconLoad = -1
 let currentLoad = 0
 let interactive = false
+let expanded = false // 拖曳中：視窗展開成涵蓋所有螢幕
+let layout = null // 最後一次算出的視窗尺寸與工具列高度；renderer 太晚載入來不及收 layout 事件時主動來問
 let promoteTimer = null
 const trayIcons = new Map()
 
@@ -101,14 +103,44 @@ function targetDisplay() {
 function positionWindow() {
   if (!win || win.isDestroyed()) return
   const d = targetDisplay()
-  // 用 bounds 而不是 workArea：我們要蓋在工具列上面，不是停在工具列上方。
-  win.setBounds({
-    x: d.bounds.x,
-    y: d.bounds.y + d.bounds.height - BAR_HEIGHT,
-    width: d.bounds.width,
-    height: BAR_HEIGHT,
-  })
-  win.webContents.send('layout', { width: d.bounds.width, height: BAR_HEIGHT })
+  const all = screen.getAllDisplays()
+  let bounds
+  if (expanded) {
+    // 拖曳中：視窗涵蓋所有螢幕，才能拖到別台、也不限制往上抬多高
+    const left = Math.min(...all.map((x) => x.bounds.x))
+    const top = Math.min(...all.map((x) => x.bounds.y))
+    const right = Math.max(...all.map((x) => x.bounds.x + x.bounds.width))
+    const bottom = Math.max(...all.map((x) => x.bounds.y + x.bounds.height))
+    bounds = { x: left, y: top, width: right - left, height: bottom - top }
+  } else {
+    // 用 bounds 而不是 workArea：我們要蓋在工具列上面，不是停在工具列上方。
+    bounds = {
+      x: d.bounds.x,
+      y: d.bounds.y + d.bounds.height - BAR_HEIGHT,
+      width: d.bounds.width,
+      height: BAR_HEIGHT,
+    }
+  }
+  win.setBounds(bounds)
+  // 每台螢幕的範圍與地面（座標換成視窗內座標）。地面 = 工作區底部，也就是工具列上緣；
+  // 工具列在別邊或自動隱藏時工作區底部等於螢幕底部，螃蟹就直接站在螢幕底部。
+  layout = {
+    width: bounds.width,
+    height: bounds.height,
+    originX: bounds.x,
+    originY: bounds.y,
+    expanded,
+    homeId: d.id,
+    displays: all.map((x) => ({
+      id: x.id,
+      left: x.bounds.x - bounds.x,
+      right: x.bounds.x + x.bounds.width - bounds.x,
+      top: x.bounds.y - bounds.y,
+      bottom: x.bounds.y + x.bounds.height - bounds.y,
+      ground: x.workArea.y + x.workArea.height - bounds.y,
+    })),
+  }
+  win.webContents.send('layout', layout)
 }
 
 function createWindow() {
@@ -291,6 +323,7 @@ function applyCrabVisibility() {
     // 常見情境是在螃蟹身上按右鍵把自己關掉，這時滑鼠正好壓在牠身上、視窗處於
     // 接管狀態。不先恢復穿透的話，下次顯示時整條 130px 會擋住工具列。
     setInteractive(false)
+    expanded = false
     win.hide()
   }
 }
@@ -486,6 +519,19 @@ if (!app.requestSingleInstanceLock()) {
     if (win && !win.isDestroyed()) buildMenu().popup({ window: win })
   })
   ipcMain.handle('get-config', () => config)
+  ipcMain.handle('get-layout', () => layout)
+  ipcMain.on('set-expanded', (_e, value) => {
+    if (!!value === expanded) return
+    expanded = !!value
+    positionWindow()
+  })
+  // 螃蟹放開並落地後：記住牠在哪台螢幕，視窗縮回那台的底部
+  ipcMain.on('drop-on-display', (_e, id) => {
+    const found = screen.getAllDisplays().find((d) => d.id === id)
+    expanded = false
+    if (found) update({ displayId: found.id })
+    positionWindow()
+  })
 }
 
 function withTimeout(promise, ms) {

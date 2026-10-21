@@ -35,7 +35,7 @@ const DEFAULTS = {
 }
 
 // 有哪些吉祥物。新增動物時加在這裡，畫法與動作寫在 renderer，設定視窗的說明寫在 settings.js 的 MASCOTS
-const MASCOTS = ['crab', 'bird', 'bear']
+const MASCOTS = ['crab', 'bird', 'bear', 'spoonbill']
 // 系統匣圖示：螃蟹跟著負載變色、小鳥搖頭動畫，其他動物用 window.MascotArt[id].renderIcon 畫一張固定的
 const STATIC_TRAY_MASCOTS = MASCOTS.filter((id) => id !== 'crab' && id !== 'bird')
 

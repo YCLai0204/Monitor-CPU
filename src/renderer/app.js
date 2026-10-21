@@ -37,6 +37,7 @@ const MASCOT_DEFS = {
     food: ART.bear && ART.bear.drawFood,
     run: { on: 50, off: 45, boost: 1.5 },
   },
+  spoonbill: { engine: 'fly', halfW: 48, top: 86, draw: ART.spoonbill && ART.spoonbill.draw },
 }
 
 const canvas = document.getElementById('stage')

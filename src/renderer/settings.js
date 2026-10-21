@@ -32,6 +32,14 @@ const MASCOTS = [
     perchTitle: '爬到其他視窗上',
     perch: '從視窗側邊爬上去坐；沒被移動的視窗上還會冒出食物',
   },
+  {
+    id: 'spoonbill',
+    name: '黑面琵鷺',
+    roamOn: '在畫面上飛來飛去，累了就找地方停',
+    roamOff: '關掉的話只在底下的工具列上走走、用湯匙嘴掃來掃去',
+    perchTitle: '停在其他視窗的標題列上',
+    perch: '視窗移動時會跟著走，視窗關掉或被蓋住就飛走',
+  },
 ]
 
 const DEFAULT_TEXT = {

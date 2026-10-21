@@ -3,3 +3,4 @@ dist/
 out/
 *.log
 .tmp/
+CLAUDE.md

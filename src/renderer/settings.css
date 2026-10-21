@@ -273,6 +273,11 @@ h2 {
   font-size: 12px;
 }
 
+/* 附屬在上一個開關底下的選項 */
+.check.sub {
+  margin-left: 26px;
+}
+
 .check.locked {
   cursor: default;
 }

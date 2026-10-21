@@ -3,6 +3,38 @@
 const api = window.settingsAPI
 let state = null
 
+/**
+ * 有哪些吉祥物，以及設定視窗上的說明。新增動物時在這裡加一筆（主程序的 MASCOTS 也要加），
+ * 沒寫的說明會用 DEFAULT_TEXT。
+ */
+const MASCOTS = [
+  {
+    id: 'crab',
+    name: '螃蟹',
+    roamOn: '沿著螢幕四周爬：爬上牆壁、倒掛在天花板上',
+    roamOff: '關掉的話只在底下的工具列上橫著走',
+    perchTitle: '爬到其他視窗上',
+    perch: '爬到視窗正上方再跳下去，之後沿著視窗四周爬',
+  },
+  {
+    id: 'bird',
+    name: '小鳥',
+    roamOn: '在畫面上飛來飛去，累了就找地方停',
+    roamOff: '關掉的話只在底下的工具列上走走跳跳',
+    perchTitle: '停在其他視窗的標題列上',
+    perch: '視窗移動時會跟著走，視窗關掉或被蓋住就飛走',
+  },
+]
+
+const DEFAULT_TEXT = {
+  roamOn: '在整個畫面上活動',
+  roamOff: '關掉的話只在底下的工具列上活動',
+  perchTitle: '可以到其他視窗上',
+  perch: '視窗移動時會跟著走，視窗關掉或被蓋住就離開',
+}
+
+const mascotText = (id) => ({ ...DEFAULT_TEXT, ...(MASCOTS.find((m) => m.id === id) || {}) })
+
 const $ = (sel) => document.querySelector(sel)
 const $$ = (sel) => Array.from(document.querySelectorAll(sel))
 
@@ -32,12 +64,13 @@ function render(next) {
   if (document.activeElement !== scale) scale.value = String(c.scale)
   $('#scale-out').textContent = `${Math.round(Number(scale.value) * 100)}%`
 
-  // 小鳥才有的設定
-  const isBird = c.mascot === 'bird'
-  $('#bird-card').classList.toggle('disabled', !isBird)
-  $('#bird-hint').hidden = isBird
+  // 活動範圍：每種吉祥物共用同一個開關，說明跟著角色換
+  const text = mascotText(c.mascot)
+  $('#roam-desc').textContent = c.roamScreen ? text.roamOn : text.roamOff
+  $('#perch-title').textContent = text.perchTitle
+  $('#perch-desc').textContent = text.perch
   const perchRow = $('#perch-row')
-  const perchOk = isBird && c.flyMode === 'free'
+  const perchOk = !!c.roamScreen
   perchRow.style.opacity = perchOk ? '' : '0.45'
   perchRow.querySelector('input').disabled = !perchOk
 
@@ -90,6 +123,17 @@ function meter(id, load, temp) {
 }
 
 // ---------------------------------------------------------------- 事件
+
+// 角色按鈕由 MASCOTS 產生，要在綁定點擊事件之前建好
+$('#mascots').replaceChildren(
+  ...MASCOTS.map((m) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.dataset.value = m.id
+    b.textContent = m.name
+    return b
+  })
+)
 
 for (const seg of $$('[data-key].seg, [data-key].choices')) {
   seg.addEventListener('click', (e) => {

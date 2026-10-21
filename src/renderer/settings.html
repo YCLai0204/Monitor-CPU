@@ -31,10 +31,7 @@
       <h2>吉祥物</h2>
       <div class="row">
         <span class="row-label">角色</span>
-        <div class="seg" data-key="mascot">
-          <button type="button" data-value="crab">螃蟹</button>
-          <button type="button" data-value="bird">小鳥</button>
-        </div>
+        <div class="seg" data-key="mascot" id="mascots"></div>
       </div>
       <div class="row">
         <label class="row-label" for="scale">大小</label>
@@ -53,26 +50,22 @@
       </div>
     </section>
 
-    <section class="card" id="bird-card">
-      <h2>小鳥的活動範圍</h2>
-      <div class="choices" data-key="flyMode">
-        <button type="button" class="choice" data-value="bar">
-          <strong>只在工具列上</strong>
-          <span>在工具列上方走走跳跳、短暫飛起來</span>
-        </button>
-        <button type="button" class="choice" data-value="free">
-          <strong>整個螢幕到處飛</strong>
-          <span>在畫面上飛來飛去，累了就找地方停</span>
-        </button>
-      </div>
-      <label class="check" id="perch-row">
-        <input type="checkbox" data-key="perchWindows" />
+    <section class="card">
+      <h2>活動範圍</h2>
+      <label class="check">
+        <input type="checkbox" data-key="roamScreen" />
         <span>
-          <strong>停在其他視窗的標題列上</strong>
-          <small>視窗移動時會跟著走，視窗關掉或被蓋住就飛走</small>
+          <strong>可以在整個畫面活動</strong>
+          <small id="roam-desc"></small>
         </span>
       </label>
-      <p class="hint" id="bird-hint">切換成「小鳥」後才能設定。</p>
+      <label class="check sub" id="perch-row">
+        <input type="checkbox" data-key="perchWindows" />
+        <span>
+          <strong id="perch-title"></strong>
+          <small id="perch-desc"></small>
+        </span>
+      </label>
     </section>
 
     <section class="card">

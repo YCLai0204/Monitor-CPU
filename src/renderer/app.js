@@ -18,7 +18,7 @@ const MAX_SPEED = 320      // px/s，100% 負載
 const STRIDE = 26          // 走幾 px 算一個步伐週期
 const LABEL_ROOM = 30      // 飛行時頭頂要留給數值氣泡的空間
 
-let config = { source: 'cpu', showLabel: true, scale: 1, mascot: 'crab', flyMode: 'bar', perchWindows: true }
+let config = { source: 'cpu', showLabel: true, scale: 1, mascot: 'crab', roamScreen: false, perchWindows: true }
 let metrics = { cpu: { load: 0, temp: null }, gpu: { load: null, temp: null }, load: 0 }
 
 let viewW = window.innerWidth
@@ -32,6 +32,7 @@ let expanded = false       // 視窗目前是否展開成涵蓋所有螢幕
 let freeLayout = false     // 視窗目前是否蓋滿整台螢幕（小鳥到處飛）
 let winOrigin = { x: 0, y: 0 } // 視窗左上角的螢幕座標，換版面時用來保持吉祥物的螢幕位置
 let perchesScreen = []     // 其他視窗標題列可以停的線段（螢幕座標），主程序每 200ms 更新
+let windowsScreen = []     // 其他視窗的外框（螢幕座標），螃蟹沿著爬
 
 const actor = {
   x: viewW / 2,
@@ -80,6 +81,27 @@ const bird = {
   time: 0,
 }
 
+/**
+ * 螃蟹在整個螢幕模式的狀態。螢幕四周和每個視窗的外框都當成一圈「環」，
+ * 螃蟹貼著環爬（frac 是走到這圈的幾分之幾），身體朝著 n（法線）那一側。
+ */
+const crawl = {
+  mode: 'fall',            // 'walk' 貼著環爬 | 'fall' 跳下或掉下來 | 'held' 被抓著
+  loop: { kind: 'screen' },// { kind: 'screen' } 螢幕內側 | { kind: 'window', id } 某個視窗的外側
+  frac: 0,
+  move: 1,                 // 1 = 順時針，-1 = 逆時針
+  vx: 0,
+  vy: 0,
+  angle: 0,                // 畫的時候的旋轉角度（平滑追著法線）
+  nx: 0,                   // 目前身體朝的方向（法線），掉落或被抓著時是正上方
+  ny: -1,
+  mission: null,           // { id, lx }：要去哪個視窗，先爬到天花板上 lx 的位置再跳下去
+  missionT: 6,             // 多久後想去別的視窗
+  stayT: 0,                // 在視窗上待多久
+  leaving: false,          // 待夠了，等爬到側邊或底部就跳下去
+  boost: 0,                // 被戳到後暴衝的剩餘時間
+}
+
 const bubbles = []
 let pinned = false
 let hovering = false
@@ -101,6 +123,15 @@ function halfW() {
 
 function topH() {
   return (isBird() ? BIRD_TOP : CRAB_TOP) * config.scale
+}
+
+/**
+ * 可以在整個畫面活動（每種吉祥物共用的開關）：主程序把視窗蓋滿整台螢幕才算，
+ * 切換途中視窗還沒換好時仍照工具列模式。拖曳中視窗會展開成所有螢幕，這時看設定。
+ * 新增動物時，在 step() 裡依這個判斷分成「工具列」與「整個畫面」兩種動作即可。
+ */
+function roamFree() {
+  return freeLayout || (expanded && !!config.roamScreen)
 }
 
 function groundY() {
@@ -140,6 +171,8 @@ function applyLayout(l) {
     if (isBird()) landOn(groundPerch(), actor.x)
   }
   if (isBird() && bird.mode === 'fly' && bird.target) bird.target = null // 範圍變了，重新挑目標
+  // 版面變了，螃蟹原本貼著的邊可能已經不一樣：先放手掉下去，落地時重新貼上
+  if (crabFree() && crawl.mode !== 'held') crabFall(0, 0)
 }
 
 function displayAt(x, y) {
@@ -194,6 +227,10 @@ function step(dt) {
 }
 
 function stepCrab(dt, load) {
+  if (crabFree()) {
+    stepCrabFree(dt, load)
+    return
+  }
   const scale = config.scale
   const margin = halfW() + 6
 
@@ -252,6 +289,324 @@ function stepCrab(dt, load) {
   actor.phase += (Math.abs(dx) / (STRIDE * scale)) * Math.PI * 2 + dt * 1.1
 }
 
+// ---------------------------------------------------------------- 螃蟹：整個螢幕爬
+
+const CORNER_IN = 0.75     // 螢幕內側轉角的半徑（乘上螃蟹高度），轉過去時身體才不會跑出畫面
+const CORNER_OUT = 6       // 視窗外側轉角的半徑（px，乘上 scale）
+const MISSION_SPEED = 110  // 要去別的視窗時至少用這個速度爬（px/s，乘上 scale），低負載才不會爬半天
+
+function crabFree() {
+  return !isBird() && roamFree()
+}
+
+/** 其他視窗的外框（視窗座標），排除最大化和不在這台螢幕上的。 */
+function windowRects() {
+  const list = []
+  const dw = cur.right - cur.left
+  const dh = cur.ground - cur.top
+  for (const w of windowsScreen) {
+    const l = w.x - winOrigin.x
+    const t = w.y - winOrigin.y
+    if (w.w >= dw - 8 && w.h >= dh - 8) continue
+    const cx = l + w.w / 2
+    const cy = t + w.h / 2
+    if (cx < cur.left || cx > cur.right || cy < cur.top || cy > cur.ground) continue
+    list.push({
+      id: w.id,
+      l: Math.max(l, cur.left),
+      t: Math.max(t, cur.top),
+      r: Math.min(l + w.w, cur.right),
+      b: Math.min(t + w.h, cur.ground),
+    })
+  }
+  return list
+}
+
+/** 可以落腳的上緣：工具列上緣，加上（有開的話）其他視窗沒被蓋住的頂端。 */
+function crabTops() {
+  const tops = [{ kind: 'screen', id: 'screen', y: groundY(), x1: cur.left, x2: cur.right }]
+  if (!config.perchWindows) return tops
+  const ids = new Set(windowRects().map((w) => w.id))
+  const minY = cur.top + topH() * 1.5
+  for (const p of perchesScreen) {
+    if (!ids.has(p.id)) continue
+    const y = p.y - winOrigin.y
+    const x1 = Math.max(p.x1 - winOrigin.x, cur.left)
+    const x2 = Math.min(p.x2 - winOrigin.x, cur.right)
+    if (y < minY || y > groundY() - 20 || x2 - x1 < halfW() * 2 + 10) continue
+    tops.push({ kind: 'window', id: p.id, y, x1, x2 })
+  }
+  return tops
+}
+
+/** 螃蟹貼著的那一圈：螢幕的話貼內側，視窗的話貼外側。視窗不見了回傳 null。 */
+function loopShape(loop) {
+  if (loop.kind === 'screen') {
+    return { rect: { l: cur.left, t: cur.top, r: cur.right, b: groundY() }, rho: topH() * CORNER_IN, outside: false }
+  }
+  if (!config.perchWindows) return null
+  const rect = windowRects().find((w) => w.id === loop.id)
+  return rect ? { rect, rho: CORNER_OUT * config.scale, outside: true } : null
+}
+
+/** 圓角矩形拆成順時針的 8 段：上、右上角、右、右下角、下、左下角、左、左上角。 */
+function loopSegments({ rect, rho, outside }) {
+  const { l, t, r, b } = rect
+  const p = Math.max(0, Math.min(rho, (r - l) / 2, (b - t) / 2))
+  const segs = [
+    { kind: 'line', ax: l + p, ay: t, bx: r - p, by: t, ux: 0, uy: -1 },
+    { kind: 'arc', cx: r - p, cy: t + p, a0: -Math.PI / 2 },
+    { kind: 'line', ax: r, ay: t + p, bx: r, by: b - p, ux: 1, uy: 0 },
+    { kind: 'arc', cx: r - p, cy: b - p, a0: 0 },
+    { kind: 'line', ax: r - p, ay: b, bx: l + p, by: b, ux: 0, uy: 1 },
+    { kind: 'arc', cx: l + p, cy: b - p, a0: Math.PI / 2 },
+    { kind: 'line', ax: l, ay: b - p, bx: l, by: t + p, ux: -1, uy: 0 },
+    { kind: 'arc', cx: l + p, cy: t + p, a0: Math.PI },
+  ]
+  for (const s of segs) s.len = s.kind === 'line' ? Math.hypot(s.bx - s.ax, s.by - s.ay) : (Math.PI / 2) * p
+  return { segs, p, outside, total: segs.reduce((a, s) => a + s.len, 0) || 1 }
+}
+
+/** 環上 frac 的位置；n 是身體朝的方向（螢幕內側朝裡、視窗外側朝外），t 是順時針的前進方向。 */
+function pointOnLoop(path, frac) {
+  let d = (((frac % 1) + 1) % 1) * path.total
+  const last = path.segs[path.segs.length - 1]
+  for (const s of path.segs) {
+    if (d <= s.len || s === last) {
+      const k = s.len ? Math.min(1, d / s.len) : 0
+      let x
+      let y
+      let ux = s.ux
+      let uy = s.uy
+      if (s.kind === 'line') {
+        x = s.ax + (s.bx - s.ax) * k
+        y = s.ay + (s.by - s.ay) * k
+      } else {
+        const a = s.a0 + (k * Math.PI) / 2
+        ux = Math.cos(a)
+        uy = Math.sin(a)
+        x = s.cx + ux * path.p
+        y = s.cy + uy * path.p
+      }
+      const sign = path.outside ? 1 : -1
+      return { x, y, nx: ux * sign, ny: uy * sign, tx: -uy, ty: ux }
+    }
+    d -= s.len
+  }
+  return null
+}
+
+/** 離 (x, y) 最近的直線段位置換成 frac，落地時用來貼上去。 */
+function fracAt(path, x, y) {
+  let best = Infinity
+  let bestD = 0
+  let d0 = 0
+  for (const s of path.segs) {
+    if (s.kind === 'line' && s.len > 0) {
+      const k = clamp(((x - s.ax) * (s.bx - s.ax) + (y - s.ay) * (s.by - s.ay)) / (s.len * s.len), 0, 1)
+      const dist = Math.hypot(s.ax + (s.bx - s.ax) * k - x, s.ay + (s.by - s.ay) * k - y)
+      if (dist < best) {
+        best = dist
+        bestD = d0 + k * s.len
+      }
+    }
+    d0 += s.len
+  }
+  return bestD / path.total
+}
+
+/** 畫 (0, -1) 朝上的螃蟹要轉幾度，身體才會朝著 n。 */
+function angleOfNormal(nx, ny) {
+  return Math.atan2(nx, -ny)
+}
+
+function approachAngle(a, target, rate) {
+  const d = Math.atan2(Math.sin(target - a), Math.cos(target - a))
+  return Math.abs(d) <= rate ? target : a + Math.sign(d) * rate
+}
+
+/** 螃蟹身體中心（視窗座標）。旋轉都繞這裡轉，從天花板放手翻正時才不會甩出畫面。 */
+function crabCenter() {
+  const h2 = topH() * 0.5
+  return { x: actor.x + crawl.nx * h2, y: feetY() + crawl.ny * h2 }
+}
+
+function crabFall(vx, vy) {
+  // 離開環的那一刻保持身體中心不動，之後以「轉正」的腳底位置做物理
+  if (crawl.mode === 'walk') {
+    const c = crabCenter()
+    actor.x = c.x
+    actor.lift = groundY() - (c.y + topH() * 0.5)
+  }
+  crawl.nx = 0
+  crawl.ny = -1
+  crawl.mode = 'fall'
+  crawl.vx = vx
+  crawl.vy = vy
+  crawl.mission = null
+  crawl.leaving = false
+}
+
+function crabLand(top, x) {
+  const loop = top.kind === 'window' ? { kind: 'window', id: top.id } : { kind: 'screen' }
+  const shape = loopShape(loop)
+  if (!shape) return false
+  const path = loopSegments(shape)
+  const load = clamp(metrics.load || 0, 0, 100)
+  const e = load / 100
+  crawl.mode = 'walk'
+  crawl.nx = 0
+  crawl.ny = -1
+  crawl.loop = loop
+  crawl.frac = fracAt(path, x, top.y)
+  crawl.move = Math.random() < 0.5 ? -1 : 1
+  crawl.vx = 0
+  crawl.vy = 0
+  crawl.leaving = false
+  crawl.stayT = rand(10, 25) * (1 - 0.5 * e)
+  crawl.missionT = rand(6, 16) * (1 - 0.5 * e)
+  actor.pause = 0.4
+  // 拖曳後放開落地：視窗縮回這台螢幕
+  if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+  return true
+}
+
+/** 挑一個視窗去：記下要從天花板哪裡跳下去。 */
+function pickCrabMission() {
+  const m = halfW() + 4
+  const options = crabTops().filter((s) => s.kind === 'window' && s.y - cur.top > topH() * 2.2)
+  if (!options.length) return
+  const pick = options[Math.floor(Math.random() * options.length)]
+  crawl.mission = { id: pick.id, lx: rand(pick.x1 + m, pick.x2 - m) }
+}
+
+function stepCrabFree(dt, load) {
+  const scale = config.scale
+  const e = load / 100
+
+  if (drag && drag.moved) {
+    // 被抓著：轉正、腳亂蹬
+    crawl.mode = 'held'
+    crawl.mission = null
+    crawl.angle = approachAngle(crawl.angle, 0, dt * 10)
+    actor.speed = 0
+    actor.phase += dt * 16
+    return
+  }
+
+  if (crawl.mode !== 'walk') {
+    stepCrabFall(dt)
+    return
+  }
+
+  const shape = loopShape(crawl.loop)
+  if (!shape) {
+    // 爬著的視窗關掉、縮小或最大化了：掉下去
+    crabFall(0, 0)
+    return
+  }
+  const path = loopSegments(shape)
+  const onWindow = crawl.loop.kind === 'window'
+
+  // 速度跟工具列模式一樣：負載越高越快；有目的地時不會慢吞吞
+  let speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * Math.pow(e, 1.2)
+  if (crawl.boost > 0) {
+    crawl.boost -= dt
+    speed = Math.max(speed, 260)
+  }
+
+  if (crawl.mission) {
+    const target = crabTops().find((s) => s.id === crawl.mission.id && crawl.mission.lx >= s.x1 && crawl.mission.lx <= s.x2)
+    if (!target || onWindow) {
+      crawl.mission = null
+    } else {
+      speed = Math.max(speed, MISSION_SPEED * scale)
+      const goal = fracAt(path, crawl.mission.lx, cur.top)
+      const delta = ((goal - crawl.frac + 1.5) % 1) - 0.5
+      crawl.move = delta >= 0 ? 1 : -1
+      const remain = Math.abs(delta) * path.total
+      if (remain < 3) {
+        // 爬到視窗正上方的天花板了：放手跳下去
+        crabFall(0, 0)
+        return
+      }
+      speed = Math.min(speed, remain / dt)
+    }
+  }
+
+  // 低負載時走走停停、偶爾自己轉向；有目的地時不停
+  if (!crawl.mission && actor.pause > 0) {
+    actor.pause -= dt
+    speed = 0
+  } else if (!crawl.mission) {
+    const idleChance = e < 0.25 ? 0.09 : e < 0.55 ? 0.02 : 0
+    if (idleChance > 0 && Math.random() < idleChance * dt * 10) actor.pause = 0.6 + Math.random() * 2.2
+    if (Math.random() < 0.08 * dt) crawl.move *= -1
+  }
+  actor.speed += (speed - actor.speed) * Math.min(1, dt * 4)
+
+  const step = actor.speed * dt
+  crawl.frac = (crawl.frac + (crawl.move * step) / path.total + 1) % 1
+  const pt = pointOnLoop(path, crawl.frac)
+  actor.x = pt.x
+  actor.lift = groundY() - pt.y
+  crawl.nx = pt.nx
+  crawl.ny = pt.ny
+
+  const target = angleOfNormal(pt.nx, pt.ny)
+  crawl.angle = approachAngle(crawl.angle, target, dt * 10)
+  // 螃蟹橫著走：前進方向投影到牠自己的左右，決定腳往哪邊擺
+  const along = (pt.tx * Math.cos(target) + pt.ty * Math.sin(target)) * crawl.move
+  actor.dir = along >= 0 ? 1 : -1
+  actor.phase += (step / (STRIDE * scale)) * Math.PI * 2 + dt * 1.1
+
+  if (onWindow) {
+    crawl.stayT -= dt
+    if (crawl.stayT <= 0) crawl.leaving = true
+    // 待夠了，爬到側邊或底部時往外跳下去
+    if (crawl.leaving && (Math.abs(pt.nx) > 0.9 || pt.ny > 0.9)) {
+      crabFall(pt.nx * 200 + pt.tx * crawl.move * 60, pt.ny * 120 - 120)
+    }
+  } else if (!crawl.mission && config.perchWindows) {
+    crawl.missionT -= dt
+    if (crawl.missionT <= 0) {
+      crawl.missionT = rand(6, 16) * (1 - 0.5 * e)
+      pickCrabMission()
+    }
+  }
+}
+
+function stepCrabFall(dt) {
+  const m = halfW() + 4
+  const x0 = actor.x
+  const y0 = feetY()
+  crawl.vy += GRAVITY * dt
+  let x = x0 + crawl.vx * dt
+  let y = y0 + crawl.vy * dt
+  if (x < cur.left + m) { x = cur.left + m; crawl.vx = Math.abs(crawl.vx) * 0.4 }
+  if (x > cur.right - m) { x = cur.right - m; crawl.vx = -Math.abs(crawl.vx) * 0.4 }
+  if (y < cur.top + topH()) { y = cur.top + topH(); crawl.vy = Math.max(0, crawl.vy) }
+  crawl.angle = approachAngle(crawl.angle, 0, dt * 9) // 在空中翻正
+  actor.speed = 0
+  actor.phase += dt * 16
+
+  // 往下掉時，碰到的第一個上緣就落在那裡
+  if (crawl.vy >= 0) {
+    let hit = null
+    for (const s of crabTops()) {
+      if (y0 <= s.y + 0.5 && y >= s.y && x >= s.x1 && x <= s.x2 && (!hit || s.y < hit.y)) hit = s
+    }
+    if (!hit && y >= groundY()) hit = crabTops()[0]
+    if (hit) {
+      actor.x = x
+      actor.lift = groundY() - hit.y
+      if (crabLand(hit, x)) return
+    }
+  }
+  actor.x = x
+  actor.lift = groundY() - Math.min(y, groundY())
+}
+
 function updateBlink(dt) {
   actor.nextBlink -= dt
   if (actor.nextBlink <= 0) {
@@ -264,9 +619,8 @@ function updateBlink(dt) {
 
 // ---------------------------------------------------------------- 小鳥
 
-/** 整個螢幕飛：主程序把視窗蓋滿整台螢幕才算（切換途中視窗還沒換好時仍照工具列模式）。 */
 function birdFree() {
-  return freeLayout || (expanded && config.flyMode === 'free')
+  return isBird() && roamFree()
 }
 
 /** 飛行範圍（視窗座標，腳底的位置）。工具列模式就是視窗那一條，到處飛則是整台螢幕。 */
@@ -665,12 +1019,12 @@ function render(now) {
     }
   }
 
-  // 只清掉上一格和這一格畫到的範圍
+  // 只清掉上一格和這一格畫到的範圍（螃蟹在牆上或倒掛時身體會往旁邊或往下長）
   const box = {
-    x: rx - 180 * scale,
-    y: ry - 230 * scale,
-    w: 360 * scale,
-    h: 320 * scale,
+    x: rx - 220 * scale,
+    y: ry - 240 * scale,
+    w: 440 * scale,
+    h: 400 * scale,
   }
   if (lastBox) ctx.clearRect(lastBox.x, lastBox.y, lastBox.w, lastBox.h)
   else ctx.clearRect(0, 0, viewW, viewH)
@@ -711,6 +1065,14 @@ function render(now) {
     return
   }
 
+  if (crabFree()) {
+    // 繞著身體中心轉：貼在牆上、倒掛在天花板、在空中翻正
+    const c = crabCenter()
+    ctx.translate(c.x - rx, c.y - ry)
+    ctx.rotate(crawl.angle)
+    ctx.translate(0, topH() * 0.5)
+  }
+
   if (bubbles.length) drawBubbles(ctx, bubbles, scale)
 
   drawCrab(ctx, {
@@ -749,9 +1111,18 @@ function updateLabel() {
   label.style.setProperty('--hue', String(Math.round(loadToHue(clamp(metrics.load || 0, 0, 100)))))
 
   const w = label.offsetWidth || 120
-  const lx = Math.max(cur.left + 6, Math.min(cur.right - w - 6, actor.x - w / 2))
-  const birdHop = isBird() ? bird.hopY : 0
-  const ly = Math.max(2, feetY() - birdHop - topH() - 26)
+  let ax = actor.x
+  let ly
+  if (crabFree()) {
+    // 倒掛在天花板時標籤放在身體下面，其他時候放在身體上面
+    const c = crabCenter()
+    ax = c.x
+    ly = crawl.ny > 0.5 ? c.y + topH() * 0.5 + 8 : Math.max(2, c.y - topH() * 0.5 - 26)
+  } else {
+    const birdHop = isBird() ? bird.hopY : 0
+    ly = Math.max(2, feetY() - birdHop - topH() - 26)
+  }
+  const lx = Math.max(cur.left + 6, Math.min(cur.right - w - 6, ax - w / 2))
   label.style.transform = `translate(${Math.round(lx)}px, ${Math.round(ly)}px)`
   label.classList.add('visible')
 }
@@ -768,6 +1139,11 @@ function fmt(v, unit) {
 
 // 視窗預設整片穿透（工具列和其他視窗才點得到），只有游標壓在吉祥物身上時才短暫接管。
 function overMascot(px, py) {
+  if (crabFree()) {
+    const c = crabCenter()
+    const r = Math.max(halfW(), topH() * 0.5) * 0.85
+    return Math.abs(px - c.x) <= r && Math.abs(py - c.y) <= r
+  }
   const feet = feetY() - (isBird() ? bird.hopY : 0)
   const hw = halfW()
   const top = feet - topH()
@@ -786,8 +1162,9 @@ window.addEventListener('mousedown', (e) => {
   drag = {
     startX: e.clientX,
     startY: e.clientY,
-    dx: e.clientX - actor.x,
-    dy: e.clientY - feetY(),
+    // 螃蟹可能倒掛或貼在牆上：被抓起來時轉正，讓游標抓在身體中間
+    dx: crabFree() ? 0 : e.clientX - actor.x,
+    dy: crabFree() ? -topH() * 0.5 : e.clientY - feetY(),
     moved: false,
   }
 })
@@ -800,6 +1177,11 @@ window.addEventListener('mousemove', (e) => {
       actor.vy = 0
       actor.pause = 0
       if (isBird()) bird.hopY = 0
+      if (crabFree()) {
+        crawl.mode = 'held'
+        crawl.nx = 0
+        crawl.ny = -1
+      }
       // 視窗展開成涵蓋所有螢幕，才能拖到別台或抬得很高
       window.crabAPI.setExpanded(true)
     }
@@ -828,7 +1210,11 @@ window.addEventListener('mouseup', (e) => {
   // 落在螢幕邊緣或縫隙時，收進所在螢幕的範圍內
   const margin = halfW() + 6
   actor.x = clamp(actor.x, cur.left + margin, cur.right - margin)
-  if (isBird()) {
+  if (crabFree()) {
+    // 放開就往下掉，落在第一個碰到的視窗頂端或工具列上
+    crabFall(0, 0)
+    if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+  } else if (isBird()) {
     if (actor.lift <= 0) {
       actor.lift = 0
       landOn(groundPerch(), actor.x)
@@ -837,9 +1223,9 @@ window.addEventListener('mouseup', (e) => {
       bird.mode = 'fly'
       bird.target = null
       bird.flightT = 0
-      bird.route = config.flyMode === 'free' ? 1 : 0
+      bird.route = config.roamScreen ? 1 : 0
       // 到處飛的時候整台螢幕都是範圍，放開就可以把視窗縮回這台螢幕
-      if (expanded && config.flyMode === 'free') window.crabAPI.dropOnDisplay(cur.id)
+      if (expanded && config.roamScreen) window.crabAPI.dropOnDisplay(cur.id)
     }
   } else if (actor.lift <= 0) {
     actor.lift = 0
@@ -858,6 +1244,13 @@ window.addEventListener('click', (e) => {
   if (isBird()) {
     // 被戳到會嚇一跳飛走
     takeOff(e.clientX)
+    return
+  }
+  if (crabFree()) {
+    crawl.move *= -1
+    crawl.mission = null
+    crawl.boost = 1.2
+    actor.pause = 0
     return
   }
   // 被戳到會嚇一跳，往反方向跑掉
@@ -905,7 +1298,10 @@ window.crabAPI.onConfig((data) => {
   resize()
 })
 window.crabAPI.onLayout(applyLayout)
-window.crabAPI.onPerches((list) => { perchesScreen = Array.isArray(list) ? list : [] })
+window.crabAPI.onPerches((data) => {
+  perchesScreen = Array.isArray(data && data.perches) ? data.perches : []
+  windowsScreen = Array.isArray(data && data.windows) ? data.windows : []
+})
 window.crabAPI.getLayout().then((l) => { if (l) applyLayout(l) }).catch(() => {})
 window.crabAPI.getConfig().then((c) => {
   config = { ...config, ...c }

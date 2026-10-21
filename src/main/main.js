@@ -26,20 +26,23 @@ const DEFAULTS = {
   scale: 1,
   displayId: null,        // null = 主螢幕
   startOnLogin: false,
-  mascot: 'crab',         // 'crab' | 'bird'（小鳥）
-  flyMode: 'bar',         // 小鳥的活動範圍：'bar' 只在工具列上方 | 'free' 整個螢幕到處飛
-  perchWindows: true,     // 整個螢幕飛的時候，可以停在其他視窗的標題列上
+  mascot: 'crab',         // MASCOTS 裡的其中一個
+  roamScreen: false,      // 可以在整個畫面活動（每種吉祥物都適用）；關掉就只在底下的工具列上
+  perchWindows: true,     // 整個畫面活動時可以到其他視窗上（小鳥停標題列、螃蟹爬上去）
   showCrab: true,         // 在桌面（工具列上）顯示吉祥物
   showTray: true,         // 在右下角系統匣顯示小圖示
   promotedTrayPaths: [],  // 已經自動設成「直接顯示在右下角」過的 exe 路徑
 }
 
+// 有哪些吉祥物。新增動物時加在這裡，畫法與動作寫在 renderer，設定視窗的說明寫在 settings.js 的 MASCOTS
+const MASCOTS = ['crab', 'bird']
+
 // 設定視窗送來的值要先檢查，壞掉的值不能寫進設定檔
 const isBool = (v) => typeof v === 'boolean'
 const SETTING_RULES = {
   source: (v) => ['cpu', 'gpu', 'max'].includes(v),
-  mascot: (v) => ['crab', 'bird'].includes(v),
-  flyMode: (v) => ['bar', 'free'].includes(v),
+  mascot: (v) => MASCOTS.includes(v),
+  roamScreen: isBool,
   scale: (v) => typeof v === 'number' && v >= 0.5 && v <= 2,
   displayId: (v) => v === null || screen.getAllDisplays().some((d) => d.id === v),
   perchWindows: isBool,
@@ -99,9 +102,13 @@ function loadConfig() {
   try {
     const raw = JSON.parse(fs.readFileSync(configPath(), 'utf8'))
     config = { ...DEFAULTS, ...raw }
+    // 舊版的活動範圍叫 flyMode（'bar' | 'free'），換成通用的開關
+    if (raw.roamScreen === undefined && raw.flyMode !== undefined) config.roamScreen = raw.flyMode === 'free'
+    delete config.flyMode
   } catch (_) {
     config = { ...DEFAULTS }
   }
+  if (!MASCOTS.includes(config.mascot)) config.mascot = DEFAULTS.mascot
   // 兩個都關掉就完全找不到選單了（設定檔被手動改壞時才會發生）
   if (!config.showCrab && !config.showTray) config.showTray = true
 }
@@ -120,9 +127,9 @@ function probeScriptPath() {
   return path.join(__dirname, 'probe.ps1')
 }
 
-/** 小鳥設成「整個螢幕到處飛」：視窗蓋滿整台螢幕，而不是只有底部一條。 */
-function freeFlying() {
-  return config.mascot === 'bird' && config.flyMode === 'free'
+/** 可以在整個畫面活動：視窗蓋滿整台螢幕，而不是只有底部一條。每種吉祥物都適用。 */
+function freeRoam() {
+  return !!config.roamScreen
 }
 
 function targetDisplay() {
@@ -146,8 +153,8 @@ function positionWindow() {
     const right = Math.max(...all.map((x) => x.bounds.x + x.bounds.width))
     const bottom = Math.max(...all.map((x) => x.bounds.y + x.bounds.height))
     bounds = { x: left, y: top, width: right - left, height: bottom - top }
-  } else if (freeFlying()) {
-    // 小鳥到處飛：整台螢幕都是牠的，平常一樣整片穿透，不會擋到任何東西
+  } else if (freeRoam()) {
+    // 整個螢幕：整台螢幕都是吉祥物的，平常一樣整片穿透，不會擋到任何東西
     bounds = { ...d.bounds }
   } else {
     // 用 bounds 而不是 workArea：我們要蓋在工具列上面，不是停在工具列上方。
@@ -167,7 +174,7 @@ function positionWindow() {
     originX: bounds.x,
     originY: bounds.y,
     expanded,
-    free: freeFlying(),
+    free: freeRoam(),
     homeId: d.id,
     displays: all.map((x) => ({
       id: x.id,
@@ -231,11 +238,11 @@ function createWindow() {
   })
 }
 
-// ---------------------------------------------------------------- 小鳥可以停的標題列
+// ---------------------------------------------------------------- 其他視窗（小鳥停的標題列、螃蟹爬的外框）
 
-/** 只有小鳥在整個螢幕飛、而且開了「停在視窗標題列」時才需要盯著其他視窗。 */
+/** 只有在整個螢幕模式、而且開了「到其他視窗上」時才需要盯著其他視窗。 */
 function applyWindowWatcher() {
-  const want = freeFlying() && config.perchWindows && config.showCrab
+  const want = freeRoam() && config.perchWindows && config.showCrab
   if (want) windowWatcher.start()
   else windowWatcher.stop()
 }
@@ -255,10 +262,11 @@ function subtractRange(segs, c, d) {
 }
 
 /**
- * 視窗清單（實體像素、最上層的在前）→ 小鳥可以站的標題列線段（螢幕 DIP 座標）。
- * 被上層視窗蓋住的那一段扣掉，不然小鳥會看起來停在別的視窗中間。
+ * 視窗清單（實體像素、最上層的在前）→ 換成螢幕 DIP 座標的外框（螃蟹沿著爬），
+ * 以及可以站的上緣線段（小鳥降落、螃蟹跳下去落腳）。
+ * 上緣被上層視窗蓋住的那一段扣掉，不然會看起來停在別的視窗中間。
  */
-function computePerches(list) {
+function computeWindowShapes(list) {
   const rects = list.map((w) => {
     const phys = { x: w.l, y: w.t, width: w.r - w.l, height: w.b - w.t }
     let r = phys
@@ -279,15 +287,16 @@ function computePerches(list) {
       }
     }
   })
-  return perches
+  const windows = rects.map((w) => ({ id: w.id, x: Math.round(w.x), y: Math.round(w.y), w: Math.round(w.w), h: Math.round(w.h) }))
+  return { perches, windows }
 }
 
 windowWatcher.on('windows', (list) => {
-  const perches = computePerches(list)
-  const json = JSON.stringify(perches)
+  const shapes = computeWindowShapes(list)
+  const json = JSON.stringify(shapes)
   if (json === lastPerchesJson) return
   lastPerchesJson = json
-  if (win && !win.isDestroyed()) win.webContents.send('perches', perches)
+  if (win && !win.isDestroyed()) win.webContents.send('perches', shapes)
 })
 
 // ---------------------------------------------------------------- 系統匣圖示
@@ -521,11 +530,11 @@ function applySettings(patch) {
   update(clean)
   if ('showCrab' in clean) applyCrabVisibility()
   if ('showTray' in clean) applyTrayVisibility()
-  if (('displayId' in clean || 'mascot' in clean || 'flyMode' in clean) && config.showCrab) {
+  if (('displayId' in clean || 'mascot' in clean || 'roamScreen' in clean) && config.showCrab) {
     expanded = false
     positionWindow()
   }
-  if ('mascot' in clean || 'flyMode' in clean || 'perchWindows' in clean) applyWindowWatcher()
+  if ('mascot' in clean || 'roamScreen' in clean || 'perchWindows' in clean) applyWindowWatcher()
   if ('startOnLogin' in clean) applyLoginItem()
   return true
 }

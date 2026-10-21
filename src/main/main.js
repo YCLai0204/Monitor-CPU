@@ -576,7 +576,12 @@ function openSettings() {
     if (level >= 2) console.error(`[settings] ${source}:${line} ${message}`)
   })
   settingsWin.loadFile(path.join(__dirname, '..', 'renderer', 'settings.html'))
-  settingsWin.once('ready-to-show', () => settingsWin.show())
+  // ready-to-show 有時候很晚才來、甚至不來（視窗就一直藏著），所以頁面載入完也顯示一次當保險
+  const reveal = () => {
+    if (settingsWin && !settingsWin.isDestroyed() && !settingsWin.isVisible()) settingsWin.show()
+  }
+  settingsWin.once('ready-to-show', reveal)
+  settingsWin.webContents.once('did-finish-load', () => setTimeout(reveal, 300))
   settingsWin.on('closed', () => { settingsWin = null })
 }
 

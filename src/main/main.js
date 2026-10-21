@@ -6,6 +6,7 @@ const fs = require('fs')
 const path = require('path')
 
 const { Metrics } = require('./metrics')
+const { WindowWatcher } = require('./window-watcher')
 const { createCrabIcon } = require('./tray-icon')
 
 const APP_NAME = 'Monitor-CPU'
@@ -17,7 +18,7 @@ const LEGACY_DATA_DIRS = ['crab-monitor']
 app.setName(APP_NAME)
 app.setPath('userData', path.join(app.getPath('appData'), APP_NAME))
 
-const BAR_HEIGHT = 360 // 視窗高度：螃蟹 + 上方的數值氣泡 + 被拖起來時可以抬高的空間
+const BAR_HEIGHT = 360 // 視窗高度：吉祥物 + 上方的數值氣泡 + 被拖起來或小鳥飛起來的空間
 
 const DEFAULTS = {
   source: 'cpu',          // 'cpu' | 'gpu' | 'max'
@@ -25,16 +26,33 @@ const DEFAULTS = {
   scale: 1,
   displayId: null,        // null = 主螢幕
   startOnLogin: false,
-  mascot: 'crab',         // 'crab' | 'bird'（搖頭小鳥）
+  mascot: 'crab',         // 'crab' | 'bird'（小鳥）
+  flyMode: 'bar',         // 小鳥的活動範圍：'bar' 只在工具列上方 | 'free' 整個螢幕到處飛
+  perchWindows: true,     // 整個螢幕飛的時候，可以停在其他視窗的標題列上
   showCrab: true,         // 在桌面（工具列上）顯示吉祥物
   showTray: true,         // 在右下角系統匣顯示小圖示
   promotedTrayPaths: [],  // 已經自動設成「直接顯示在右下角」過的 exe 路徑
 }
 
+// 設定視窗送來的值要先檢查，壞掉的值不能寫進設定檔
+const isBool = (v) => typeof v === 'boolean'
+const SETTING_RULES = {
+  source: (v) => ['cpu', 'gpu', 'max'].includes(v),
+  mascot: (v) => ['crab', 'bird'].includes(v),
+  flyMode: (v) => ['bar', 'free'].includes(v),
+  scale: (v) => typeof v === 'number' && v >= 0.5 && v <= 2,
+  displayId: (v) => v === null || screen.getAllDisplays().some((d) => d.id === v),
+  perchWindows: isBool,
+  showLabel: isBool,
+  showCrab: isBool,
+  showTray: isBool,
+  startOnLogin: isBool,
+}
+
 // 系統匣圖示每 5% 一種顏色；Windows 在 100% / 150% / 200% 縮放下分別要 16 / 24 / 32px
 const TRAY_BUCKETS = Array.from({ length: 21 }, (_, i) => i * 5)
 const TRAY_SCALES = [[1, 16], [1.5, 24], [2, 32]]
-// 小鳥的系統匣圖示是搖頭動畫：一個搖頭週期畫成幾張，依負載換張的速度
+// 右下角的小鳥是搖頭動畫（桌面上的小鳥不搖頭）：一個搖頭週期畫成幾張，依負載換張的速度
 const BIRD_FRAMES = 8
 const BIRD_CYCLES_PER_SEC = [0.6, 2.5] // 0% 與 100% 負載時每秒搖幾個週期
 
@@ -42,8 +60,10 @@ const BIRD_CYCLES_PER_SEC = [0.6, 2.5] // 0% 與 100% 負載時每秒搖幾個�
 const PROMOTE_RETRY_MS = [1500, 3000, 6000, 12000, 20000]
 
 let win = null
+let settingsWin = null
 let tray = null
 let metrics = null
+let lastMetrics = null
 let config = { ...DEFAULTS }
 let lastIconLoad = -1
 let currentLoad = 0
@@ -55,6 +75,8 @@ const trayIcons = new Map()
 const birdIcons = []
 let birdFrame = 0
 let birdTimer = null
+const windowWatcher = new WindowWatcher()
+let lastPerchesJson = ''
 
 const configPath = () => path.join(app.getPath('userData'), 'settings.json')
 
@@ -98,6 +120,11 @@ function probeScriptPath() {
   return path.join(__dirname, 'probe.ps1')
 }
 
+/** 小鳥設成「整個螢幕到處飛」：視窗蓋滿整台螢幕，而不是只有底部一條。 */
+function freeFlying() {
+  return config.mascot === 'bird' && config.flyMode === 'free'
+}
+
 function targetDisplay() {
   const displays = screen.getAllDisplays()
   if (config.displayId !== null) {
@@ -119,6 +146,9 @@ function positionWindow() {
     const right = Math.max(...all.map((x) => x.bounds.x + x.bounds.width))
     const bottom = Math.max(...all.map((x) => x.bounds.y + x.bounds.height))
     bounds = { x: left, y: top, width: right - left, height: bottom - top }
+  } else if (freeFlying()) {
+    // 小鳥到處飛：整台螢幕都是牠的，平常一樣整片穿透，不會擋到任何東西
+    bounds = { ...d.bounds }
   } else {
     // 用 bounds 而不是 workArea：我們要蓋在工具列上面，不是停在工具列上方。
     bounds = {
@@ -130,13 +160,14 @@ function positionWindow() {
   }
   win.setBounds(bounds)
   // 每台螢幕的範圍與地面（座標換成視窗內座標）。地面 = 工作區底部，也就是工具列上緣；
-  // 工具列在別邊或自動隱藏時工作區底部等於螢幕底部，螃蟹就直接站在螢幕底部。
+  // 工具列在別邊或自動隱藏時工作區底部等於螢幕底部，吉祥物就直接站在螢幕底部。
   layout = {
     width: bounds.width,
     height: bounds.height,
     originX: bounds.x,
     originY: bounds.y,
     expanded,
+    free: freeFlying(),
     homeId: d.id,
     displays: all.map((x) => ({
       id: x.id,
@@ -199,6 +230,65 @@ function createWindow() {
       .catch((err) => console.error('[tray] 畫系統匣圖示失敗，繼續使用備用圖示：', err))
   })
 }
+
+// ---------------------------------------------------------------- 小鳥可以停的標題列
+
+/** 只有小鳥在整個螢幕飛、而且開了「停在視窗標題列」時才需要盯著其他視窗。 */
+function applyWindowWatcher() {
+  const want = freeFlying() && config.perchWindows && config.showCrab
+  if (want) windowWatcher.start()
+  else windowWatcher.stop()
+}
+
+/** [a, b] 區間扣掉 [c, d]。 */
+function subtractRange(segs, c, d) {
+  const out = []
+  for (const [a, b] of segs) {
+    if (d <= a || c >= b) {
+      out.push([a, b])
+      continue
+    }
+    if (c > a) out.push([a, c])
+    if (d < b) out.push([d, b])
+  }
+  return out
+}
+
+/**
+ * 視窗清單（實體像素、最上層的在前）→ 小鳥可以站的標題列線段（螢幕 DIP 座標）。
+ * 被上層視窗蓋住的那一段扣掉，不然小鳥會看起來停在別的視窗中間。
+ */
+function computePerches(list) {
+  const rects = list.map((w) => {
+    const phys = { x: w.l, y: w.t, width: w.r - w.l, height: w.b - w.t }
+    let r = phys
+    try { r = screen.screenToDipRect(null, phys) } catch (_) { /* 換不了就當作 100% 縮放 */ }
+    return { id: w.id, x: r.x, y: r.y, w: r.width, h: r.height }
+  })
+  const perches = []
+  rects.forEach((w, i) => {
+    let segs = [[w.x, w.x + w.w]]
+    for (let j = 0; j < i && segs.length; j++) {
+      const o = rects[j]
+      if (o.y > w.y + 1 || o.y + o.h < w.y) continue
+      segs = subtractRange(segs, o.x, o.x + o.w)
+    }
+    for (const [x1, x2] of segs) {
+      if (x2 - x1 >= 60) {
+        perches.push({ id: w.id, wx: Math.round(w.x), y: Math.round(w.y), x1: Math.round(x1), x2: Math.round(x2) })
+      }
+    }
+  })
+  return perches
+}
+
+windowWatcher.on('windows', (list) => {
+  const perches = computePerches(list)
+  const json = JSON.stringify(perches)
+  if (json === lastPerchesJson) return
+  lastPerchesJson = json
+  if (win && !win.isDestroyed()) win.webContents.send('perches', perches)
+})
 
 // ---------------------------------------------------------------- 系統匣圖示
 
@@ -282,7 +372,7 @@ function createTray() {
   tray = new Tray(trayImage(bucketOf(currentLoad)))
   tray.setToolTip(APP_NAME)
   tray.setContextMenu(buildMenu())
-  tray.on('click', () => tray.popUpContextMenu())
+  tray.on('click', openSettings) // 左鍵直接開設定，右鍵才是選單
   applyTrayMascot()
 
   clearTimeout(promoteTimer)
@@ -401,11 +491,12 @@ function applyCrabVisibility() {
     win.setAlwaysOnTop(true, 'screen-saver')
   } else {
     // 常見情境是在螃蟹身上按右鍵把自己關掉，這時滑鼠正好壓在牠身上、視窗處於
-    // 接管狀態。不先恢復穿透的話，下次顯示時整條 130px 會擋住工具列。
+    // 接管狀態。不先恢復穿透的話，下次顯示時整片視窗會擋住工具列。
     setInteractive(false)
     expanded = false
     win.hide()
   }
+  applyWindowWatcher()
 }
 
 function applyTrayVisibility() {
@@ -413,101 +504,103 @@ function applyTrayVisibility() {
   else if (!config.showTray && tray) destroyTray()
 }
 
-/** 螃蟹與系統匣圖示是唯二能叫出選單的地方，所以不允許兩個同時關掉。 */
-function setVisibility(patch) {
-  const next = { ...config, ...patch }
-  if (!next.showCrab && !next.showTray) {
-    if (tray) tray.setContextMenu(buildMenu()) // 把被點掉的勾勾還原
-    return
+/**
+ * 所有設定變更都從這裡進來（設定視窗、再開一次 exe）。
+ * 吉祥物與系統匣圖示是唯二能叫出選單的地方，所以不允許兩個同時關掉；
+ * 不合法的變更回傳 false，設定視窗會把畫面還原。
+ */
+function applySettings(patch) {
+  const clean = {}
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (SETTING_RULES[key] && SETTING_RULES[key](value)) clean[key] = value
   }
-  update(patch)
-  applyCrabVisibility()
-  applyTrayVisibility()
+  if (!Object.keys(clean).length) return false
+  const next = { ...config, ...clean }
+  if (!next.showCrab && !next.showTray) return false
+
+  update(clean)
+  if ('showCrab' in clean) applyCrabVisibility()
+  if ('showTray' in clean) applyTrayVisibility()
+  if (('displayId' in clean || 'mascot' in clean || 'flyMode' in clean) && config.showCrab) {
+    expanded = false
+    positionWindow()
+  }
+  if ('mascot' in clean || 'flyMode' in clean || 'perchWindows' in clean) applyWindowWatcher()
+  if ('startOnLogin' in clean) applyLoginItem()
+  return true
 }
 
-// ---------------------------------------------------------------- 選單
+// ---------------------------------------------------------------- 選單與設定視窗
 
+/** 設定都搬到設定視窗了，選單只留入口。 */
 function buildMenu() {
-  const displays = screen.getAllDisplays()
-  const primaryId = screen.getPrimaryDisplay().id
-  const crabLocked = config.showCrab && !config.showTray
-  const trayLocked = config.showTray && !config.showCrab
-
   return Menu.buildFromTemplate([
     { label: APP_NAME, enabled: false },
     { type: 'separator' },
-    {
-      label: '監看來源',
-      submenu: [
-        mkRadio('CPU 使用率', 'source', 'cpu'),
-        mkRadio('GPU 使用率', 'source', 'gpu'),
-        mkRadio('兩者取較高', 'source', 'max'),
-      ],
-    },
-    {
-      label: '吉祥物',
-      submenu: [
-        mkRadio('螃蟹', 'mascot', 'crab'),
-        mkRadio('搖頭小鳥', 'mascot', 'bird'),
-      ],
-    },
-    {
-      label: '大小',
-      submenu: [
-        mkRadio('小', 'scale', 0.75),
-        mkRadio('中', 'scale', 1),
-        mkRadio('大', 'scale', 1.35),
-      ],
-    },
-    {
-      label: '顯示數值標籤',
-      type: 'checkbox',
-      checked: config.showLabel,
-      click: (item) => update({ showLabel: item.checked }),
-    },
-    {
-      label: '顯示在螢幕',
-      submenu: displays.map((d, i) => ({
-        label: `螢幕 ${i + 1}${d.id === primaryId ? '（主要）' : ''} — ${d.bounds.width}×${d.bounds.height}`,
-        type: 'radio',
-        checked: (config.displayId === null ? primaryId : config.displayId) === d.id,
-        click: () => { update({ displayId: d.id }); positionWindow() },
-      })),
-    },
-    { type: 'separator' },
-    {
-      label: crabLocked ? '在桌面顯示吉祥物（至少要留一個）' : '在桌面顯示吉祥物',
-      type: 'checkbox',
-      checked: config.showCrab,
-      enabled: !crabLocked,
-      click: (item) => setVisibility({ showCrab: item.checked }),
-    },
-    {
-      label: trayLocked ? '在右下角顯示小圖示（至少要留一個）' : '在右下角顯示小圖示',
-      type: 'checkbox',
-      checked: config.showTray,
-      enabled: !trayLocked,
-      click: (item) => setVisibility({ showTray: item.checked }),
-    },
-    { type: 'separator' },
-    {
-      label: '開機時自動啟動',
-      type: 'checkbox',
-      checked: config.startOnLogin,
-      click: (item) => {
-        update({ startOnLogin: item.checked })
-        applyLoginItem()
-      },
-    },
-    { label: '溫度顯示 N/A？', click: showTemperatureHelp },
+    { label: '設定…', click: openSettings },
     { type: 'separator' },
     { label: '離開', click: () => { app.quit() } },
   ])
 }
 
+function openSettings() {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    if (settingsWin.isMinimized()) settingsWin.restore()
+    settingsWin.show()
+    settingsWin.focus()
+    return
+  }
+  const work = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea
+  settingsWin = new BrowserWindow({
+    width: 460,
+    height: Math.min(820, work.height - 40),
+    useContentSize: true,
+    resizable: true,
+    minWidth: 380,
+    minHeight: 420,
+    maximizable: false,
+    fullscreenable: false,
+    title: `${APP_NAME} 設定`,
+    icon: config.mascot === 'bird' && birdIcons.length ? birdIcons[0] : trayImage(0),
+    autoHideMenuBar: true,
+    backgroundColor: '#1b1e24',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'settings-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+  settingsWin.setMenu(null)
+  settingsWin.webContents.on('console-message', (_e, level, message, line, source) => {
+    if (level >= 2) console.error(`[settings] ${source}:${line} ${message}`)
+  })
+  settingsWin.loadFile(path.join(__dirname, '..', 'renderer', 'settings.html'))
+  settingsWin.once('ready-to-show', () => settingsWin.show())
+  settingsWin.on('closed', () => { settingsWin = null })
+}
+
+function settingsState() {
+  const primaryId = screen.getPrimaryDisplay().id
+  return {
+    config,
+    version: app.getVersion(),
+    displays: screen.getAllDisplays().map((d, i) => ({
+      id: d.id,
+      label: `螢幕 ${i + 1}${d.id === primaryId ? '（主要）' : ''} — ${d.bounds.width}×${d.bounds.height}`,
+      primary: d.id === primaryId,
+    })),
+    metrics: lastMetrics,
+  }
+}
+
+function sendToSettings(channel, data) {
+  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send(channel, data)
+}
+
 // 打包後 README 在 asar 裡、而且別台電腦不一定有能開 .md 的程式，所以直接用對話框說明。
 async function showTemperatureHelp() {
-  const { response } = await dialog.showMessageBox({
+  const options = {
     type: 'info',
     title: APP_NAME,
     message: '為什麼溫度顯示 N/A？',
@@ -524,24 +617,17 @@ async function showTemperatureHelp() {
     defaultId: 1,
     cancelId: 1,
     noLink: true,
-  })
-  if (response === 0) shell.openExternal('https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases')
-}
-
-function mkRadio(label, key, value) {
-  return {
-    label,
-    type: 'radio',
-    checked: config[key] === value,
-    click: () => update({ [key]: value }),
   }
+  const parent = settingsWin && !settingsWin.isDestroyed() ? settingsWin : null
+  const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+  if (response === 0) shell.openExternal('https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases')
 }
 
 function update(patch) {
   config = { ...config, ...patch }
   saveConfig()
   if (win && !win.isDestroyed()) win.webContents.send('config', config)
-  if (tray) tray.setContextMenu(buildMenu())
+  sendToSettings('settings:state', settingsState())
   if ('mascot' in patch) applyTrayMascot()
 }
 
@@ -559,8 +645,11 @@ function pickLoad(state) {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  // 再開一次 exe 就是「把螃蟹找回來」：兩個入口都強制打開
-  app.on('second-instance', () => setVisibility({ showCrab: true, showTray: true }))
+  // 再開一次 exe 就是「把吉祥物找回來」：兩個入口都強制打開，順便打開設定視窗
+  app.on('second-instance', () => {
+    applySettings({ showCrab: true, showTray: true })
+    openSettings()
+  })
 
   app.whenReady().then(() => {
     loadConfig()
@@ -571,8 +660,10 @@ if (!app.requestSingleInstanceLock()) {
     metrics = new Metrics({ probeScript: probeScriptPath() })
     metrics.on('update', (state) => {
       currentLoad = pickLoad(state)
+      lastMetrics = { cpu: { ...state.cpu }, gpu: { ...state.gpu }, load: currentLoad }
       refreshTrayIcon(currentLoad)
       if (win && !win.isDestroyed()) win.webContents.send('metrics', { ...state, load: currentLoad })
+      sendToSettings('settings:metrics', lastMetrics)
       if (tray) {
         tray.setToolTip(
           `CPU ${fmt(state.cpu.load, '%')}  ${fmt(state.cpu.temp, '°C')}\n` +
@@ -584,13 +675,13 @@ if (!app.requestSingleInstanceLock()) {
 
     const onDisplaysChanged = () => {
       if (config.showCrab) positionWindow()
-      if (tray) tray.setContextMenu(buildMenu())
+      sendToSettings('settings:state', settingsState())
     }
     screen.on('display-metrics-changed', onDisplaysChanged)
     screen.on('display-added', onDisplaysChanged)
     screen.on('display-removed', onDisplaysChanged)
 
-    // 有些全螢幕程式會把自己推到更上層，定期把螃蟹頂回最前面
+    // 有些全螢幕程式會把自己推到更上層，定期把吉祥物頂回最前面
     setInterval(() => {
       if (win && !win.isDestroyed() && win.isVisible() && !interactive) win.setAlwaysOnTop(true, 'screen-saver')
     }, 10000)
@@ -598,13 +689,17 @@ if (!app.requestSingleInstanceLock()) {
 
   // 註冊這個監聽器（即使什麼都不做）就會取消 Electron 的自動結束，讓程式常駐在背景
   app.on('window-all-closed', () => {})
-  app.on('before-quit', () => { if (metrics) metrics.stop() })
+  app.on('before-quit', () => {
+    if (metrics) metrics.stop()
+    windowWatcher.stop()
+  })
 
   ipcMain.on('set-interactive', (_e, value) => setInteractive(!!value))
-  // 系統匣圖示可能被關掉了，所以右鍵選單直接掛在螃蟹視窗上，不依賴 tray
+  // 系統匣圖示可能被關掉了，所以右鍵選單直接掛在吉祥物視窗上，不依賴 tray
   ipcMain.on('show-menu', () => {
     if (win && !win.isDestroyed()) buildMenu().popup({ window: win })
   })
+  ipcMain.on('open-settings', openSettings)
   ipcMain.handle('get-config', () => config)
   ipcMain.handle('get-layout', () => layout)
   ipcMain.on('set-expanded', (_e, value) => {
@@ -612,13 +707,19 @@ if (!app.requestSingleInstanceLock()) {
     expanded = !!value
     positionWindow()
   })
-  // 螃蟹放開並落地後：記住牠在哪台螢幕，視窗縮回那台的底部
+  // 吉祥物放開並落地後：記住牠在哪台螢幕，視窗縮回那台
   ipcMain.on('drop-on-display', (_e, id) => {
     const found = screen.getAllDisplays().find((d) => d.id === id)
     expanded = false
     if (found) update({ displayId: found.id })
     positionWindow()
   })
+
+  // 設定視窗
+  ipcMain.handle('settings:get', () => settingsState())
+  ipcMain.handle('settings:update', (_e, patch) => ({ ok: applySettings(patch), state: settingsState() }))
+  ipcMain.on('settings:temp-help', () => { showTemperatureHelp() })
+  ipcMain.on('settings:quit', () => { app.quit() })
 }
 
 function withTimeout(promise, ms) {

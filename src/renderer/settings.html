@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self';" />
+  <title>Monitor-CPU 設定</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="title">
+      <h1>Monitor-CPU</h1>
+      <span class="version" id="version"></span>
+    </div>
+    <div class="live" aria-live="polite">
+      <div class="meter">
+        <span class="meter-name">CPU</span>
+        <span class="meter-value" id="cpu-value">—</span>
+        <span class="meter-bar"><span id="cpu-bar"></span></span>
+      </div>
+      <div class="meter">
+        <span class="meter-name">GPU</span>
+        <span class="meter-value" id="gpu-value">—</span>
+        <span class="meter-bar"><span id="gpu-bar"></span></span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>吉祥物</h2>
+      <div class="row">
+        <span class="row-label">角色</span>
+        <div class="seg" data-key="mascot">
+          <button type="button" data-value="crab">螃蟹</button>
+          <button type="button" data-value="bird">小鳥</button>
+        </div>
+      </div>
+      <div class="row">
+        <label class="row-label" for="scale">大小</label>
+        <div class="range">
+          <input type="range" id="scale" min="0.6" max="1.6" step="0.05" />
+          <output id="scale-out"></output>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">跟著誰動</span>
+        <div class="seg" data-key="source">
+          <button type="button" data-value="cpu">CPU</button>
+          <button type="button" data-value="gpu">GPU</button>
+          <button type="button" data-value="max">取較高</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="bird-card">
+      <h2>小鳥的活動範圍</h2>
+      <div class="choices" data-key="flyMode">
+        <button type="button" class="choice" data-value="bar">
+          <strong>只在工具列上</strong>
+          <span>在工具列上方走走跳跳、短暫飛起來</span>
+        </button>
+        <button type="button" class="choice" data-value="free">
+          <strong>整個螢幕到處飛</strong>
+          <span>在畫面上飛來飛去，累了就找地方停</span>
+        </button>
+      </div>
+      <label class="check" id="perch-row">
+        <input type="checkbox" data-key="perchWindows" />
+        <span>
+          <strong>停在其他視窗的標題列上</strong>
+          <small>視窗移動時會跟著走，視窗關掉或被蓋住就飛走</small>
+        </span>
+      </label>
+      <p class="hint" id="bird-hint">切換成「小鳥」後才能設定。</p>
+    </section>
+
+    <section class="card">
+      <h2>顯示</h2>
+      <label class="check">
+        <input type="checkbox" data-key="showLabel" />
+        <span>
+          <strong>一直顯示數值標籤</strong>
+          <small>關掉的話，滑鼠移到吉祥物身上才會出現</small>
+        </span>
+      </label>
+      <label class="check">
+        <input type="checkbox" data-key="showCrab" />
+        <span>
+          <strong>在桌面顯示吉祥物</strong>
+          <small id="showCrab-note"></small>
+        </span>
+      </label>
+      <label class="check">
+        <input type="checkbox" data-key="showTray" />
+        <span>
+          <strong>在右下角顯示小圖示</strong>
+          <small id="showTray-note"></small>
+        </span>
+      </label>
+      <div class="row">
+        <label class="row-label" for="display">顯示在螢幕</label>
+        <select id="display"></select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>系統</h2>
+      <label class="check">
+        <input type="checkbox" data-key="startOnLogin" />
+        <span>
+          <strong>開機時自動啟動</strong>
+          <small>登入 Windows 後自動開啟，不用自己點</small>
+        </span>
+      </label>
+      <div class="buttons">
+        <button type="button" class="btn" id="temp-help">溫度顯示 N/A？</button>
+        <button type="button" class="btn danger" id="quit">離開程式</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">設定會自動儲存。關掉這個視窗不會結束程式。</footer>
+
+  <script src="settings.js"></script>
+</body>
+</html>

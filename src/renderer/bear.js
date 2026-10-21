@@ -520,9 +520,9 @@ function drawHead(ctx, { blink, heat, low, pose, look, lookY = 0, chew = 0 }) {
     }
   }
 
-  // 眼睛：黑毛上看不到黑眼珠，所以畫白色眼白；轉頭時遠的那隻眼睛小一點
+  // 眼睛：黑毛上看不到黑眼珠，所以畫白色眼白；兩隻保持一樣大，遠的那隻縮小會變成大小眼
   for (const side of [-1, 1]) {
-    const k = 1 - Math.max(0, -side * look) * 0.2
+    const k = 1
     const ex = cx + side * 6 + look * 3
     const ey = cy - 4 + fy * 0.8
     const er = (low ? 3.6 : 3.2) * k

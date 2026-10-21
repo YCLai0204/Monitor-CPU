@@ -315,10 +315,9 @@ function drawHead(ctx, o) {
   ctx.fillStyle = C.face
   ctx.fill()
 
-  // 眼睛：黑臉上畫白色眼白才看得到，眼珠是深紅色
+  // 眼睛：黑臉上畫白色眼白才看得到，眼珠是深紅色；兩隻保持一樣大，遠的那隻縮小會變成大小眼
   for (const side of [-1, 1]) {
-    const far = Math.max(0, -side * look)
-    const k = 1 - far * 0.35
+    const k = 1
     const ex = side * 5 + fx * 1.1
     const ey = cy
     const er = low ? 3.2 : 2.6

@@ -334,8 +334,11 @@ function drawBody(ctx, fluff, low, lw, folded, stretchedSide) {
 function drawHead(ctx, o) {
   const { swing, icon, look, headTilt, peck, blink, heat, low, lw } = o
   const pivotY = -36 // 脖子的位置，頭繞這裡擺
-  const angle = swing * 0.5 + headTilt
+  // 搖頭主要靠「轉臉」（五官往左右偏）表現，整顆頭只歪一點點；
+  // 整顆頭歪太多的話兩隻眼睛會一高一低，看起來眼睛歪掉
+  const angle = swing * 0.12 + headTilt
   const shift = swing * (icon ? 2.5 : 4) + look * 1.5
+  const turn = Math.max(-1, Math.min(1, look + swing * 0.8))
 
   ctx.save()
   ctx.translate(shift, pivotY + peck * 9)
@@ -359,8 +362,8 @@ function drawHead(ctx, o) {
   ctx.strokeStyle = C.outline
   ctx.stroke()
 
-  // 臉的五官跟著 look 往左右偏，看起來像轉頭；遠的那一側縮小一點
-  const fx = look * 3.5
+  // 臉的五官跟著 turn 往左右偏，看起來像轉頭
+  const fx = turn * 3.5
 
   for (const side of [-1, 1]) {
     ctx.beginPath()
@@ -377,8 +380,8 @@ function drawHead(ctx, o) {
 
   // 眼睛：綠頰鸚哥特有的白色裸眼圈，黑色眼珠
   for (const side of [-1, 1]) {
-    const far = Math.max(0, -side * look)
-    const k = 1 - far * 0.35
+    // 兩隻眼睛保持一樣大，只跟著五官一起偏；遠的那隻縮小會變成大小眼
+    const k = 1
     const ex = side * 8.5 + fx * 0.6
     const ey = cy - 3.5
     if (!low) {
@@ -397,32 +400,36 @@ function drawHead(ctx, o) {
     ctx.fill()
     if (blink < 0.6) {
       ctx.beginPath()
-      ctx.ellipse(ex + look * 0.8, ey, (low ? 2.8 : 2.5) * k, (low ? 2.9 : 2.6) * (1 - blink), 0, 0, Math.PI * 2)
+      ctx.ellipse(ex + turn * 0.8, ey, (low ? 2.8 : 2.5) * k, (low ? 2.9 : 2.6) * (1 - blink), 0, 0, Math.PI * 2)
       ctx.fillStyle = C.eye
       ctx.fill()
       if (!low) {
         ctx.beginPath()
-        ctx.arc(ex + look * 0.8 + 0.9, ey - 1, 0.8, 0, Math.PI * 2)
+        ctx.arc(ex + turn * 0.8 + 0.9, ey - 1, 0.8, 0, Math.PI * 2)
         ctx.fillStyle = '#fff'
         ctx.fill()
       }
     }
   }
 
+  // 彎彎的喙，尖端朝下；轉頭時只稍微偏過去，偏太多看起來像喙在臉上滑動
+  ctx.save()
+  ctx.translate(fx * 0.35, 0)
+  ctx.rotate(turn * 0.05)
+  // 喙縮小，以上緣中心為基準，才不會擋到兩側的眼睛
+  ctx.translate(0, cy - 4)
+  ctx.scale(0.62, 0.8)
+  ctx.translate(0, -(cy - 4))
   if (!low) {
-    // 眉心的紅色斑
+    // 眉心的紅色斑，貼在喙的正上方，跟著喙一起動
     ctx.beginPath()
-    ctx.moveTo(-5 + fx, cy - 9)
-    ctx.quadraticCurveTo(fx, cy - 12, 5 + fx, cy - 9)
-    ctx.lineWidth = 2
+    // 沿著喙上緣的曲線描粗線，下半截會被後面畫的喙蓋住，所以上緣完全貼齊
+    ctx.moveTo(-6, cy - 4)
+    ctx.quadraticCurveTo(0, cy - 7.5, 6, cy - 4)
+    ctx.lineWidth = 6.5
     ctx.strokeStyle = C.brow
     ctx.stroke()
   }
-
-  // 彎彎的喙，尖端朝下；轉頭時跟著偏過去
-  ctx.save()
-  ctx.translate(fx, 0)
-  ctx.rotate(look * 0.12)
   ctx.beginPath()
   ctx.moveTo(-6, cy - 4)
   ctx.quadraticCurveTo(-7.2, cy + 7, 0, cy + 14)
@@ -441,6 +448,14 @@ function drawHead(ctx, o) {
     ctx.lineWidth = 1.6
     ctx.strokeStyle = 'rgba(255,255,255,0.7)'
     ctx.stroke()
+
+    // 小小的鼻孔，開在喙的左右上角（跟真的綠頰鸚哥一樣）；這裡有縮放，半徑先除回去才會是圓的
+    ctx.fillStyle = '#8a6a66'
+    for (const side of [-1, 1]) {
+      ctx.beginPath()
+      ctx.ellipse(side * 3.9, cy - 2.6, 0.9 / 0.62, 0.9 / 0.8, 0, 0, Math.PI * 2)
+      ctx.fill()
+    }
   }
   ctx.restore()
 

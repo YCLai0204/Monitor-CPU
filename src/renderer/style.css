@@ -45,6 +45,13 @@ body {
   opacity: 1;
 }
 
+/* 視窗正在展開／收合：立刻藏起來（不等淡出），免得舊畫面被 Windows 貼到別的位置 */
+body.relayout #label,
+body.relayout canvas {
+  visibility: hidden;
+  transition: none;
+}
+
 body.hot #label {
   background: rgba(16, 19, 26, 0.92);
 }

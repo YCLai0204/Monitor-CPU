@@ -190,7 +190,9 @@ function positionWindow() {
     const top = Math.min(...all.map((x) => x.bounds.y))
     const right = Math.max(...all.map((x) => x.bounds.x + x.bounds.width))
     const bottom = Math.max(...all.map((x) => x.bounds.y + x.bounds.height))
-    bounds = { x: left, y: top, width: right - left, height: bottom - top }
+    // 四邊各內縮 1 像素：置頂視窗完整蓋住一整台螢幕時，Windows 會當成有全螢幕程式，
+    // 把工具列收起來又放出來（看起來像工具列跳一下）
+    bounds = { x: left + 1, y: top + 1, width: right - left - 2, height: bottom - top - 2 }
   } else if (freeRoam()) {
     // 整個螢幕：整台螢幕都是吉祥物的，平常一樣整片穿透，不會擋到任何東西
     bounds = { ...d.bounds }

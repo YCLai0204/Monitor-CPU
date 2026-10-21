@@ -254,6 +254,57 @@ function applyLayout(l) {
   if (isSwimmer()) turtle.target = null
   // 版面變了，螃蟹原本貼著的邊可能已經不一樣：先放手掉下去，落地時重新貼上
   if (crawlFree() && crawl.mode !== 'held') crabFall(0, 0)
+
+  // 新版面到了：馬上畫在正確的位置，不要等下一格
+  if (!first) {
+    const now = performance.now()
+    render(now)
+    lastRenderKey = renderKey(now)
+    updateLabel() // 標籤也先移到新位置，再一起顯示
+  }
+  endRelayout()
+}
+
+/**
+ * 請主程序展開或收合視窗。視窗大小一變，Windows 會先把「上一張畫面」貼在新的範圍上，
+ * 等我們畫出新的一張才換掉；那一瞬間吉祥物就會閃到別的位置（例如左邊螢幕的左上角）。
+ * 所以先把畫面清空、等清空的這一張真的送上螢幕（下下一個畫面），才請主程序改大小；
+ * 新版面送到後再照新的座標畫。萬一版面沒送來，過一下也會自己恢復。
+ */
+let layoutPending = false
+let layoutPendingTimer = null
+
+function relayout(send) {
+  layoutPending = true
+  // 數值標籤不是畫在畫布上的，要另外藏；用 class 立刻藏起來，不跑淡出動畫
+  document.body.classList.add('relayout')
+  ctx.clearRect(0, 0, viewW, viewH)
+  lastBox = null
+  lastRenderKey = ''
+  clearTimeout(layoutPendingTimer)
+  layoutPendingTimer = setTimeout(() => {
+    endRelayout()
+    resize()
+  }, 500)
+  // 展開與收合都走同一條延遲，送出的順序才會跟呼叫的順序一樣
+  requestAnimationFrame(() => requestAnimationFrame(send))
+}
+
+function endRelayout() {
+  layoutPending = false
+  clearTimeout(layoutPendingTimer)
+  document.body.classList.remove('relayout')
+}
+
+function setExpanded(value) {
+  if (value === expanded) return // 主程序也會忽略，不會有新版面送來
+  // 先當作已經展開：很快放開時，放開的流程才知道要請主程序收回去
+  expanded = value
+  relayout(() => window.crabAPI.setExpanded(value))
+}
+
+function dropOnDisplay(id) {
+  relayout(() => window.crabAPI.dropOnDisplay(id))
 }
 
 function displayAt(x, y) {
@@ -284,7 +335,8 @@ function resize(w, h) {
   actor.x = Math.min(actor.x, cur.right - halfW())
 }
 
-window.addEventListener('resize', () => resize())
+// 展開／收合時會先收到這個，但正確的大小與座標要等 layout；那時 applyLayout 會自己 resize
+window.addEventListener('resize', () => { if (!layoutPending) resize() })
 
 // ---------------------------------------------------------------- 主迴圈
 
@@ -308,7 +360,7 @@ function frame(now) {
 
   step(dt)
   const key = renderKey(now)
-  if (key !== lastRenderKey) {
+  if (!layoutPending && key !== lastRenderKey) {
     render(now)
     lastRenderKey = key
   }
@@ -418,7 +470,7 @@ function stepCrab(dt, load) {
       if (actor.vy < 0) actor.lift = 0.01
       actor.pause = 0.5
       // 完全站穩後，把視窗從「涵蓋所有螢幕」縮回這一台螢幕的底部，之後就固定在這台移動
-      if (actor.lift === 0 && expanded) window.crabAPI.dropOnDisplay(cur.id)
+      if (actor.lift === 0 && expanded) dropOnDisplay(cur.id)
     }
     return
   }
@@ -673,7 +725,7 @@ function crabLand(top, x) {
   crawl.missionT = rand(6, 16) * (1 - 0.5 * e)
   actor.pause = 0.4
   // 拖曳後放開落地：視窗縮回這台螢幕
-  if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+  if (expanded) dropOnDisplay(cur.id)
   return true
 }
 
@@ -1614,7 +1666,7 @@ function stepFlying(dt, e, hyper) {
     landOn(t.perch, t.x)
     bird.squash = 1
     // 拖曳後放開、在工具列模式下落地：視窗縮回這台螢幕的底部
-    if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+    if (expanded) dropOnDisplay(cur.id)
   } else if (bird.flightT > 20) {
     bird.route = 0 // 飛太久了（目標一直跑掉），直接找地方降落
     bird.target = null
@@ -1778,7 +1830,7 @@ function stepTurtle(dt, load) {
         turtle.waterX = actor.x
         turtle.timer = rand(4, 8)
         splash(actor.x, groundY() - WATER_DEPTH * s, 14, 1.1)
-        if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+        if (expanded) dropOnDisplay(cur.id)
       }
       return
     }
@@ -2219,6 +2271,16 @@ function setHover(over) {
   document.body.classList.toggle('hot', over)
 }
 
+const EDGE = 40 // 游標離視窗邊緣這麼近，而且那一側有別台螢幕，就當作要拖過去
+
+function nearEdge(px, py) {
+  // 只看外面有螢幕的那幾邊；例如往下拖到工具列上不算
+  return (px < EDGE && displays.some((d) => d.right <= 0)) ||
+    (px > viewW - EDGE && displays.some((d) => d.left >= viewW)) ||
+    (py < EDGE && displays.some((d) => d.bottom <= 0)) ||
+    (py > viewH - EDGE && displays.some((d) => d.top >= viewH))
+}
+
 window.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || !overMascot(e.clientX, e.clientY)) return
   drag = {
@@ -2244,10 +2306,12 @@ window.addEventListener('mousemove', (e) => {
         crawl.nx = 0
         crawl.ny = -1
       }
-      // 視窗展開成涵蓋所有螢幕，才能拖到別台或抬得很高
-      window.crabAPI.setExpanded(true)
     }
-    if (drag.moved) {
+    // 視窗要展開成涵蓋所有螢幕，才能拖到別台或抬得很高。展開時吉祥物會消失一下下，
+    // 所以視窗本來就蓋滿整台螢幕時，拖到螢幕邊緣（要往別台去）才展開
+    if (drag.moved && !expanded && (!freeLayout || nearEdge(e.clientX, e.clientY))) setExpanded(true)
+    // 視窗正在展開：游標座標已經是新視窗的，但版面還是舊的，算出來的位置會跳；等版面到了再跟上
+    if (drag.moved && !layoutPending) {
       const margin = halfW() + 6
       const x = clamp(e.clientX - drag.dx, margin, viewW - margin)
       // 頭頂最高抬到視窗頂端；吉祥物在哪台螢幕上，就以那台的工具列上緣當地面
@@ -2279,11 +2343,11 @@ window.addEventListener('mouseup', (e) => {
       turtle.target = null
       turtle.vx = 0
       turtle.vy = 0
-      if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+      if (expanded) dropOnDisplay(cur.id)
     } else if (actor.lift <= 0) {
       actor.lift = 0
       turtle.mode = 'land'
-      if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+      if (expanded) dropOnDisplay(cur.id)
     } else {
       turtle.mode = 'fall' // 掉下去，落進淺水裡
       actor.vy = 0
@@ -2291,23 +2355,23 @@ window.addEventListener('mouseup', (e) => {
   } else if (crawlFree()) {
     // 放開就往下掉，落在第一個碰到的視窗頂端或工具列上
     crabFall(0, 0)
-    if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+    if (expanded) dropOnDisplay(cur.id)
   } else if (isFlyer()) {
     if (actor.lift <= 0) {
       actor.lift = 0
       landOn(groundPerch(), actor.x)
-      if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+      if (expanded) dropOnDisplay(cur.id)
     } else {
       bird.mode = 'fly'
       bird.target = null
       bird.flightT = 0
       bird.route = config.roamScreen ? 1 : 0
       // 到處飛的時候整台螢幕都是範圍，放開就可以把視窗縮回這台螢幕
-      if (expanded && config.roamScreen) window.crabAPI.dropOnDisplay(cur.id)
+      if (expanded && config.roamScreen) dropOnDisplay(cur.id)
     }
   } else if (actor.lift <= 0) {
     actor.lift = 0
-    if (expanded) window.crabAPI.dropOnDisplay(cur.id) // 直接放在地上，不用等下墜
+    if (expanded) dropOnDisplay(cur.id) // 直接放在地上，不用等下墜
   }
   setHover(overMascot(e.clientX, e.clientY))
 })

@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld('settingsAPI', {
   onMetrics: (cb) => ipcRenderer.on('settings:metrics', (_e, data) => cb(data)),
   temperatureHelp: () => ipcRenderer.send('settings:temp-help'),
   quit: () => ipcRenderer.send('settings:quit'),
+  relaunch: () => ipcRenderer.send('settings:relaunch'),
 })

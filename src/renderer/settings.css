@@ -36,6 +36,11 @@
   padding: 0;
 }
 
+/* .buttons 之類設了 display 的元素，hidden 屬性會被蓋掉 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   background: var(--bg);
@@ -289,6 +294,7 @@ h2 {
 .hint {
   font-size: 12px;
   color: var(--muted);
+  white-space: pre-line;
 }
 
 select {

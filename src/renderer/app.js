@@ -260,6 +260,7 @@ function resize(w, h) {
   canvas.style.height = `${viewH}px`
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   lastBox = null
+  lastRenderKey = '' // 畫布被清空了，下一格一定要重畫
   actor.x = Math.min(actor.x, cur.right - halfW())
 }
 
@@ -267,15 +268,70 @@ window.addEventListener('resize', () => resize())
 
 // ---------------------------------------------------------------- 主迴圈
 
+/**
+ * 省 GPU：透明視窗每畫一格，Windows 就要把整片視窗重新合成到桌面上（整個畫面模式時是整台螢幕），
+ * 內建顯示卡用 60 格會吃掉一成以上的 GPU。所以
+ *   1. 有在動時每秒 30 格就夠順，閒著（坐著、停著、只剩眨眼）時降到每秒 12 格
+ *   2. 這一格畫出來跟上一格一樣的話就整格跳過，什麼都不送給 Windows
+ */
+const FPS_ACTIVE = 30
+const FPS_IDLE = 12
+let lastRenderKey = ''
+
 function frame(now) {
-  const dt = Math.min(0.05, (now - lastT) / 1000) // 視窗被凍結後不要瞬移
+  requestAnimationFrame(frame)
+  const elapsed = (now - lastT) / 1000
+  const fps = isAnimating() ? FPS_ACTIVE : FPS_IDLE
+  if (elapsed < 1 / fps - 0.004) return
+  const dt = Math.min(0.12, elapsed) // 視窗被凍結後不要瞬移
   lastT = now
 
   step(dt)
-  render(now)
+  const key = renderKey(now)
+  if (key !== lastRenderKey) {
+    render(now)
+    lastRenderKey = key
+  }
   // 吉祥物從靜止的游標底下走開時不會有 mousemove，要自己檢查，不然整片視窗會一直擋著滑鼠
   if (hovering && !drag && lastMouse) setHover(overMascot(lastMouse.x, lastMouse.y))
-  requestAnimationFrame(frame)
+}
+
+/** 現在有沒有明顯的動作（移動、飛行、掉落、跟著時間動的動畫）；沒有的話用閒置的格數就好。 */
+function isAnimating() {
+  const load = clamp(metrics.load || 0, 0, 100)
+  if (drag || actor.speed > 3 || load >= 70 || bubbles.length) return true // 70% 以上會冒汗、冒熱氣
+  if (foods.some((f) => f.id === null && !f.landed)) return true // 食物在往下掉
+  if (isFlyer()) {
+    if (bird.mode === 'fly' || bird.hopY > 0 || bird.squash > 0 || bird.spread > 0.05) return true
+    return ['walk', 'hop', 'peck', 'flutter', 'stretch'].includes(bird.act)
+  }
+  if (crawl.eatT > 0) return true // 咀嚼
+  return crawlFree() ? crawl.mode !== 'walk' : actor.lift > 0
+}
+
+/**
+ * 這一格會畫成什麼樣子的摘要：位置、姿勢、角度等四捨五入後串起來。
+ * 跟上一格一樣就代表畫面沒變，可以不畫。跟著時間動的動畫在有動作時才把時間算進去。
+ */
+function renderKey(now) {
+  const q = (v, k) => Math.round(v * k)
+  const load = clamp(metrics.load || 0, 0, 100)
+  const parts = [
+    config.mascot, config.scale, viewW, viewH,
+    q(actor.x, 2), q(feetY(), 2), q(actor.phase, 12), q(actor.blink, 10), q(actor.look, 20), q(actor.lookY, 20), actor.dir,
+    Math.round(load), // 螃蟹的顏色、臉紅都跟著負載
+  ]
+  if (isFlyer()) {
+    parts.push(bird.mode, q(bird.flap, 12), q(bird.spread, 20), q(bird.tilt, 30), q(bird.look, 20), q(bird.headTilt, 20),
+      q(bird.peck, 20), q(bird.stretch, 20), q(bird.fluff, 20), q(bird.squash, 20), q(bird.hopY, 2), q(bird.loop, 20), q(bird.tailSwing, 20))
+  } else {
+    parts.push(crawlPose(), wallSide(), q(crawl.angle, 30), q(crawl.nx, 10), q(crawl.ny, 10))
+  }
+  for (const f of drawableFoods()) parts.push(q(f.x, 2), q(f.y, 2))
+  if (foods.length) parts.push(Math.floor(now / 80)) // 食物偶爾會閃一下
+  for (const b of bubbles) parts.push(q(b.x, 2), q(b.y, 2))
+  if (isAnimating()) parts.push(Math.floor(now / 30)) // 冒汗、咀嚼、塵土、速度線這些跟著時間動
+  return parts.join(',')
 }
 
 function step(dt) {
@@ -1676,10 +1732,19 @@ function groundPose() {
 
 // ---------------------------------------------------------------- 數值標籤
 
+// 標籤上一次設定的值：沒變就不去動 DOM，不然每一格都會讓 Windows 重新合成畫面
+const labelState = { visible: null, text: null, source: null, hue: null, transform: null, width: 120 }
+
+function setLabelVisible(v) {
+  if (labelState.visible === v) return
+  labelState.visible = v
+  label.classList.toggle('visible', v)
+}
+
 function updateLabel() {
   const show = config.showLabel || pinned || hovering
   if (!show) {
-    label.classList.remove('visible')
+    setLabelVisible(false)
     return
   }
 
@@ -1692,11 +1757,23 @@ function updateLabel() {
     parts.push(`GPU ${fmt(gpu.temp, '°')}`)
   }
 
-  label.textContent = parts.join('　')
-  label.dataset.source = config.source
-  label.style.setProperty('--hue', String(Math.round(loadToHue(clamp(metrics.load || 0, 0, 100)))))
+  const text = parts.join('　')
+  if (labelState.text !== text) {
+    labelState.text = text
+    label.textContent = text
+    labelState.width = label.offsetWidth || 120 // 文字變了才重新量寬度
+  }
+  if (labelState.source !== config.source) {
+    labelState.source = config.source
+    label.dataset.source = config.source
+  }
+  const hue = String(Math.round(loadToHue(clamp(metrics.load || 0, 0, 100))))
+  if (labelState.hue !== hue) {
+    labelState.hue = hue
+    label.style.setProperty('--hue', hue)
+  }
 
-  const w = label.offsetWidth || 120
+  const w = labelState.width
   let ax = actor.x
   let ly
   if (crawlFree()) {
@@ -1709,8 +1786,12 @@ function updateLabel() {
     ly = Math.max(2, feetY() - birdHop - topH() - 26)
   }
   const lx = Math.max(cur.left + 6, Math.min(cur.right - w - 6, ax - w / 2))
-  label.style.transform = `translate(${Math.round(lx)}px, ${Math.round(ly)}px)`
-  label.classList.add('visible')
+  const transform = `translate(${Math.round(lx)}px, ${Math.round(ly)}px)`
+  if (labelState.transform !== transform) {
+    labelState.transform = transform
+    label.style.transform = transform
+  }
+  setLabelVisible(true)
 }
 
 function has(v) {

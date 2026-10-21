@@ -111,7 +111,27 @@ function render(next) {
   )
   select.disabled = state.displays.length < 2
 
+  renderRender(state.render)
   renderMetrics(state.metrics)
+}
+
+const RENDER_NAME = { cpu: '省 GPU（用 CPU 繪圖）', gpu: '用顯示卡繪圖' }
+
+/** 繪圖方式的說明：這台電腦自動會選哪一種、為什麼，以及什麼情況建議換另一種。 */
+function renderRender(r) {
+  if (!r) return
+  const why = r.cores >= r.minCores
+    ? `這台電腦有 ${r.cores} 個邏輯核心，CPU 多用一點幾乎感覺不到，所以自動選「${RENDER_NAME.cpu}」。`
+    : `這台電腦只有 ${r.cores} 個邏輯核心，改用 CPU 繪圖會比較吃力，所以自動選「${RENDER_NAME.gpu}」。`
+  const lines = [
+    `目前使用：${RENDER_NAME[r.active]}`,
+    why,
+    '・省 GPU：GPU 大約再省一半，CPU 稍微多用一點，適合核心多的電腦、或打遊戲時想把顯示卡留給遊戲。',
+    '・用顯示卡：CPU 用得最少，適合入門款筆電；用電池時覺得耗電也可以試試這個。',
+  ]
+  $('#render-info').textContent = lines.join('\n')
+  $('#relaunch-row').hidden = r.next === r.active
+  $('#relaunch').textContent = `重新啟動，改用「${RENDER_NAME[r.next]}」`
 }
 
 function lock(key, locked, note) {
@@ -172,6 +192,7 @@ scale.addEventListener('input', () => {
 $('#display').addEventListener('change', (e) => change({ displayId: Number(e.target.value) }))
 $('#temp-help').addEventListener('click', () => api.temperatureHelp())
 $('#quit').addEventListener('click', () => api.quit())
+$('#relaunch').addEventListener('click', () => api.relaunch())
 
 api.onState(render)
 api.onMetrics(renderMetrics)

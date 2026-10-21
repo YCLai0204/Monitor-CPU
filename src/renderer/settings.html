@@ -98,6 +98,22 @@
     </section>
 
     <section class="card">
+      <h2>效能</h2>
+      <div class="row">
+        <span class="row-label">繪圖方式</span>
+        <div class="seg" data-key="renderMode">
+          <button type="button" data-value="auto">自動</button>
+          <button type="button" data-value="cpu">省 GPU</button>
+          <button type="button" data-value="gpu">用顯示卡</button>
+        </div>
+      </div>
+      <p class="hint" id="render-info"></p>
+      <div class="buttons" id="relaunch-row" hidden>
+        <button type="button" class="btn" id="relaunch">重新啟動套用</button>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>系統</h2>
       <label class="check">
         <input type="checkbox" data-key="startOnLogin" />

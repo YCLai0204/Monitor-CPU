@@ -3,6 +3,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, shell, dialog, nativeImage } = require('electron')
 const { execFile } = require('child_process')
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 
 const { Metrics } = require('./metrics')
@@ -18,6 +19,36 @@ const LEGACY_DATA_DIRS = ['crab-monitor']
 app.setName(APP_NAME)
 app.setPath('userData', path.join(app.getPath('appData'), APP_NAME))
 
+// ---------------------------------------------------------------- 繪圖方式
+
+/**
+ * 吉祥物是一片透明視窗，每畫一格 Windows 都要重新合成整片視窗。用顯示卡畫的話，內建顯示卡
+ * 光這個程式就要用掉約一成的 GPU；改成用 CPU 畫（關掉硬體加速），GPU 大約再省一半，
+ * 代價是 CPU 多用一點（20 個邏輯核心的桌機上大約半顆核心）。
+ *
+ * 'auto' 依邏輯核心數決定：核心夠多 CPU 多用一點感覺不到，就省 GPU；核心少（入門款筆電）就用顯示卡。
+ * 硬體加速只能在程式啟動前決定，所以這裡先直接讀設定檔，改了要重新啟動才會生效。
+ */
+const RENDER_AUTO_MIN_CORES = 8
+
+function readRenderModeEarly() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8'))
+    return ['auto', 'cpu', 'gpu'].includes(raw.renderMode) ? raw.renderMode : 'auto'
+  } catch (_) {
+    return 'auto'
+  }
+}
+
+function decideRender(mode) {
+  const cores = os.cpus().length
+  const auto = cores >= RENDER_AUTO_MIN_CORES ? 'cpu' : 'gpu'
+  return { mode, cores, auto, active: mode === 'auto' ? auto : mode, minCores: RENDER_AUTO_MIN_CORES }
+}
+
+const startupRender = decideRender(readRenderModeEarly())
+if (startupRender.active === 'cpu') app.disableHardwareAcceleration()
+
 const BAR_HEIGHT = 360 // 視窗高度：吉祥物 + 上方的數值氣泡 + 被拖起來或小鳥飛起來的空間
 
 const DEFAULTS = {
@@ -31,6 +62,7 @@ const DEFAULTS = {
   perchWindows: true,     // 整個畫面活動時可以到其他視窗上（小鳥停標題列、螃蟹爬上去）
   showCrab: true,         // 在桌面（工具列上）顯示吉祥物
   showTray: true,         // 在右下角系統匣顯示小圖示
+  renderMode: 'auto',     // 繪圖方式：'auto' 依核心數自動選 | 'cpu' 省 GPU（關掉硬體加速）| 'gpu' 用顯示卡；重新啟動才生效
   promotedTrayPaths: [],  // 已經自動設成「直接顯示在右下角」過的 exe 路徑
 }
 
@@ -45,6 +77,7 @@ const SETTING_RULES = {
   source: (v) => ['cpu', 'gpu', 'max'].includes(v),
   mascot: (v) => MASCOTS.includes(v),
   roamScreen: isBool,
+  renderMode: (v) => ['auto', 'cpu', 'gpu'].includes(v),
   scale: (v) => typeof v === 'number' && v >= 0.5 && v <= 2,
   displayId: (v) => v === null || screen.getAllDisplays().some((d) => d.id === v),
   perchWindows: isBool,
@@ -627,6 +660,8 @@ function settingsState() {
       primary: d.id === primaryId,
     })),
     metrics: lastMetrics,
+    // 繪圖方式：active 是這次啟動實際在用的；設定改了但還沒重新啟動的話 pending 是 true
+    render: { ...startupRender, next: decideRender(config.renderMode).active },
   }
 }
 
@@ -756,6 +791,13 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('settings:update', (_e, patch) => ({ ok: applySettings(patch), state: settingsState() }))
   ipcMain.on('settings:temp-help', () => { showTemperatureHelp() })
   ipcMain.on('settings:quit', () => { app.quit() })
+  // 換了繪圖方式要重新啟動才會生效。portable exe 要重開使用者點的那個 exe，
+  // 不能重開暫存資料夾裡那份（結束時會被清掉）。
+  ipcMain.on('settings:relaunch', () => {
+    const portable = process.env.PORTABLE_EXECUTABLE_FILE
+    app.relaunch(portable ? { execPath: portable, args: [] } : undefined)
+    app.quit()
+  })
 }
 
 function withTimeout(promise, ms) {

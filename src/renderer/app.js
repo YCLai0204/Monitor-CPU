@@ -738,6 +738,7 @@ function climbIssue(r, topIds) {
   if (r.b - r.t <= topH() * 1.2) return `視窗太矮（${Math.round(r.b - r.t)}px）`
   if (!topIds.has(r.id)) return '頂端被其他視窗蓋住，或露出來的地方太窄'
   if (!(r.l - m > cur.left || r.r + m < cur.right)) return '左右兩邊都貼著螢幕邊緣，沒有地方走過去爬'
+  if (!((sideRoom(r, -1) && sideClear(r, -1)) || (sideRoom(r, 1) && sideClear(r, 1)))) return '可以爬的那一側被其他視窗擋住了'
   return null
 }
 
@@ -747,12 +748,28 @@ function reachableWindows() {
   return windowRects().filter((r) => !climbIssue(r, topIds))
 }
 
-/** 走到視窗哪一側的地上，準備往上爬：挑離自己近、旁邊有空間的那一側。 */
+/** 視窗這一側（-1 左、1 右）從底到頂有沒有被別的視窗擋住；被擋住的那一側爬不上去。 */
+function sideClear(r, side) {
+  const x = side < 0 ? r.l : r.r
+  const bottom = Math.min(r.b, groundY()) - 6
+  for (let k = 0; k <= 4; k++) {
+    if (coveredAt(r.id, x, bottom + (r.t + 6 - bottom) * (k / 4))) return false
+  }
+  return true
+}
+
+/** 這一側旁邊有沒有空間可以走過去。 */
+function sideRoom(r, side) {
+  const m = halfW() + 6
+  return side < 0 ? r.l - m * 2 > cur.left : r.r + m * 2 < cur.right
+}
+
+/** 走到視窗哪一側的地上，準備往上爬：挑離自己近、旁邊有空間、沒被擋住的那一側。 */
 function climbSideOf(r) {
   const m = halfW() + 6
   const sides = []
-  if (r.l - m * 2 > cur.left) sides.push({ side: -1, x: r.l - m })
-  if (r.r + m * 2 < cur.right) sides.push({ side: 1, x: r.r + m })
+  if (sideRoom(r, -1) && sideClear(r, -1)) sides.push({ side: -1, x: r.l - m })
+  if (sideRoom(r, 1) && sideClear(r, 1)) sides.push({ side: 1, x: r.r + m })
   sides.sort((a, b) => Math.abs(a.x - actor.x) - Math.abs(b.x - actor.x))
   return sides[0] || null
 }
@@ -941,9 +958,9 @@ function stepClimber(dt, e, path, onWindow) {
     if (crawl.leaving) {
       // 待夠了：從比較近、旁邊又有空間的那一側爬下來（貼著螢幕邊的那一側下去會跑出畫面）
       if (crawl.exitSide === null) {
-        const room = halfW() * 2
-        const leftOk = rect.l - room > cur.left
-        const rightOk = rect.r + room < cur.right
+        // 被擋住的那一側爬下去會被判定蓋住而直接掉下來，所以也要避開
+        const leftOk = sideRoom(rect, -1) && sideClear(rect, -1)
+        const rightOk = sideRoom(rect, 1) && sideClear(rect, 1)
         const nearLeft = u < chain.len / 2
         const left = leftOk === rightOk ? nearLeft : leftOk
         crawl.exitSide = left ? 0 : chain.len

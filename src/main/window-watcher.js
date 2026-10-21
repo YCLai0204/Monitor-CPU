@@ -6,7 +6,8 @@ const { spawn } = require('child_process')
 const INTERVAL_MS = 200
 
 /**
- * 常駐的 PowerShell：用 Windows 內建的 user32 / dwmapi 列出畫面上其他程式的視窗，
+ * 常駐的 PowerShell：用 Windows 內建的 user32 / dwmapi 列出畫面上的其他視窗（只排除吉祥物那片透明視窗，
+ * 設定視窗也算，因為它一樣會擋住其他視窗），
  * 給小鳥找可以停的標題列。沒有原生 npm 套件，Add-Type 用的是每台 Windows 都有的 .NET Framework。
  *
  * 輸出依 z-order（最上面的在前）每行一個 JSON 陣列，每個視窗是 [hwnd, left, top, right, bottom]，
@@ -27,7 +28,6 @@ public static class MonitorCpuWindows {
   [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
   [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
-  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] static extern IntPtr SetProcessDpiAwarenessContext(IntPtr v);
@@ -38,14 +38,13 @@ public static class MonitorCpuWindows {
     try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
   }
 
-  public static string List(uint self) {
+  public static string List(long self) {
     var sb = new StringBuilder("[");
     bool first = true;
     EnumWindows(delegate (IntPtr h, IntPtr l) {
       if (!IsWindowVisible(h) || IsIconic(h)) return true;
-      uint pid;
-      GetWindowThreadProcessId(h, out pid);
-      if (pid == self) return true;
+      // 只排除吉祥物那片透明視窗；設定視窗也會擋住其他視窗，要照實際的前後順序算進去
+      if (h.ToInt64() == self) return true;
       int ex = GetWindowLong(h, -20);
       if ((ex & 0x80) != 0 || (ex & 0x20) != 0) return true; // 工具視窗、穿透的浮層
       int cloaked;
@@ -74,7 +73,7 @@ const SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   `Add-Type -TypeDefinition @'\n${SOURCE}\n'@`,
   '[MonitorCpuWindows]::Init()',
-  '$self = [uint32]$env:MONITOR_CPU_PID',
+  '$self = [int64]$env:MONITOR_CPU_HWND',
   "$last = ''",
   'while ($true) {',
   '  $s = [MonitorCpuWindows]::List($self)',
@@ -86,6 +85,7 @@ const SCRIPT = [
 class WindowWatcher extends EventEmitter {
   constructor() {
     super()
+    this.excludeHwnd = '0' // 吉祥物視窗的 HWND（十進位字串），不算在「其他視窗」裡
     this._child = null
     this._running = false
     this._failures = 0
@@ -120,7 +120,7 @@ class WindowWatcher extends EventEmitter {
       child = spawn(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')],
-        { windowsHide: true, env: { ...process.env, MONITOR_CPU_PID: String(process.pid) } }
+        { windowsHide: true, env: { ...process.env, MONITOR_CPU_HWND: this.excludeHwnd } }
       )
     } catch (_) {
       return

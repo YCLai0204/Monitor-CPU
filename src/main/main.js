@@ -281,6 +281,11 @@ function createWindow() {
 /** 只有在整個螢幕模式、而且開了「到其他視窗上」時才需要盯著其他視窗（水生動物不會到其他視窗上）。 */
 function applyWindowWatcher() {
   const want = freeRoam() && config.perchWindows && config.showCrab && !NO_WINDOW_MASCOTS.includes(config.mascot)
+  if (want && win && !win.isDestroyed()) {
+    // 告訴偵測程序吉祥物視窗是哪一個，只排除它（設定視窗要照實際的前後順序算進去）
+    const h = win.getNativeWindowHandle()
+    windowWatcher.excludeHwnd = (h.length >= 8 ? h.readBigUInt64LE(0) : BigInt(h.readUInt32LE(0))).toString()
+  }
   if (want) windowWatcher.start()
   else windowWatcher.stop()
 }

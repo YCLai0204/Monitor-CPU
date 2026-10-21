@@ -349,6 +349,42 @@ function promoteTrayIcon(attempt) {
   )
 }
 
+// ---------------------------------------------------------------- 開機自動啟動
+
+/**
+ * 開機時要執行的程式。
+ *
+ * 之前直接用 process.execPath，但 portable exe 執行時其實是先解壓到暫存資料夾、
+ * 再從那裡跑，所以 execPath 是暫存資料夾裡的那份；登出後暫存檔被清掉，
+ * 開機時登錄檔指向的檔案已經不在了，看起來就是「沒有自動啟動」。
+ * electron-builder 會把使用者實際點的那個 exe 放在 PORTABLE_EXECUTABLE_FILE。
+ *
+ * 開發時（npm start）execPath 是 electron.exe，要把專案路徑當參數。
+ *
+ * 另外 Electron 寫進登錄檔時不會幫路徑加引號。路徑裡有空白（例如使用者名稱是
+ * 「windows user」）的話，Windows 開機時會在空白處切斷、去找 C:\Users\windows，
+ * 一樣什麼都不會啟動，所以 exe 路徑和參數都要自己加引號。
+ */
+function loginItemOptions() {
+  const quote = (s) => (/^".*"$/.test(s) ? s : `"${s}"`)
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE
+  if (portable) return { path: quote(portable), args: [] }
+  if (!app.isPackaged) return { path: quote(process.execPath), args: [quote(app.getAppPath())] }
+  return { path: quote(process.execPath), args: [] }
+}
+
+/** 啟動時也套用一次：exe 被搬到別的地方後，登錄檔裡的路徑會跟著更新。 */
+function applyLoginItem() {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return
+  try {
+    // 舊版用預設名稱寫入、路徑又是暫存資料夾，先清掉，免得留下一筆壞掉的紀錄
+    if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: false })
+    app.setLoginItemSettings({ openAtLogin: !!config.startOnLogin, name: APP_NAME, ...loginItemOptions() })
+  } catch (err) {
+    console.error('[login item] 設定開機自動啟動失敗：', err)
+  }
+}
+
 // ---------------------------------------------------------------- 顯示開關
 
 function setInteractive(next) {
@@ -460,9 +496,7 @@ function buildMenu() {
       checked: config.startOnLogin,
       click: (item) => {
         update({ startOnLogin: item.checked })
-        try {
-          app.setLoginItemSettings({ openAtLogin: item.checked, args: [] })
-        } catch (_) { /* 某些環境不支援 */ }
+        applyLoginItem()
       },
     },
     { label: '溫度顯示 N/A？', click: showTemperatureHelp },
@@ -530,6 +564,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     loadConfig()
+    applyLoginItem()
     createWindow()
     if (config.showTray) createTray()
 

@@ -35,7 +35,9 @@ const DEFAULTS = {
 }
 
 // 有哪些吉祥物。新增動物時加在這裡，畫法與動作寫在 renderer，設定視窗的說明寫在 settings.js 的 MASCOTS
-const MASCOTS = ['crab', 'bird']
+const MASCOTS = ['crab', 'bird', 'bear']
+// 系統匣圖示：螃蟹跟著負載變色、小鳥搖頭動畫，其他動物用 window.MascotArt[id].renderIcon 畫一張固定的
+const STATIC_TRAY_MASCOTS = MASCOTS.filter((id) => id !== 'crab' && id !== 'bird')
 
 // 設定視窗送來的值要先檢查，壞掉的值不能寫進設定檔
 const isBool = (v) => typeof v === 'boolean'
@@ -76,6 +78,7 @@ let layout = null // 最後一次算出的視窗尺寸與工具列高度；rende
 let promoteTimer = null
 const trayIcons = new Map()
 const birdIcons = []
+const staticIcons = new Map()
 let birdFrame = 0
 let birdTimer = null
 const windowWatcher = new WindowWatcher()
@@ -319,9 +322,14 @@ async function prepareTrayIcons() {
     for (let i = 0; i < ${BIRD_FRAMES}; i++) {
       bird.push(${JSON.stringify(sizes)}.map((px) => window.BirdArt.renderIcon(px, i / ${BIRD_FRAMES})))
     }
-    return { crab, bird }
+    const statics = {}
+    for (const id of ${JSON.stringify(STATIC_TRAY_MASCOTS)}) {
+      const art = (window.MascotArt || {})[id]
+      if (art) statics[id] = ${JSON.stringify(sizes)}.map((px) => art.renderIcon(px))
+    }
+    return { crab, bird, statics }
   })()`
-  const { crab, bird } = await withTimeout(win.webContents.executeJavaScript(script), 5000)
+  const { crab, bird, statics } = await withTimeout(win.webContents.executeJavaScript(script), 5000)
   const toImage = (urls) => {
     const img = nativeImage.createEmpty()
     TRAY_SCALES.forEach(([scaleFactor], i) => img.addRepresentation({ scaleFactor, dataURL: urls[i] }))
@@ -330,6 +338,18 @@ async function prepareTrayIcons() {
   for (const b of TRAY_BUCKETS) trayIcons.set(b, toImage(crab[b]))
   birdIcons.length = 0
   bird.forEach((urls) => birdIcons.push(toImage(urls)))
+  for (const [id, urls] of Object.entries(statics)) staticIcons.set(id, toImage(urls))
+}
+
+/** 這隻吉祥物用固定圖示的話回傳那張圖示（還沒畫好就是 null，先用螃蟹的頂著）。 */
+function staticTrayIcon() {
+  return STATIC_TRAY_MASCOTS.includes(config.mascot) ? staticIcons.get(config.mascot) || null : null
+}
+
+/** 設定視窗等地方要用的「目前吉祥物」圖示。 */
+function mascotIcon() {
+  if (config.mascot === 'bird' && birdIcons.length) return birdIcons[0]
+  return staticTrayIcon() || trayImage(0)
 }
 
 function bucketOf(load) {
@@ -341,7 +361,7 @@ function trayImage(bucket) {
 }
 
 function refreshTrayIcon(load) {
-  if (!tray || config.mascot === 'bird') return // 小鳥用計時器換張，不跟著顏色
+  if (!tray || config.mascot !== 'crab') return // 只有螃蟹跟著負載變色；小鳥用計時器換張，其他動物是固定的一張
   const bucket = bucketOf(load)
   if (bucket === lastIconLoad) return
   lastIconLoad = bucket
@@ -370,6 +390,8 @@ function applyTrayMascot() {
   if (!tray) return
   if (config.mascot === 'bird') {
     tickBirdIcon()
+  } else if (staticTrayIcon()) {
+    tray.setImage(staticTrayIcon())
   } else {
     lastIconLoad = -1
     refreshTrayIcon(currentLoad)
@@ -570,7 +592,7 @@ function openSettings() {
     maximizable: false,
     fullscreenable: false,
     title: `${APP_NAME} 設定`,
-    icon: config.mascot === 'bird' && birdIcons.length ? birdIcons[0] : trayImage(0),
+    icon: mascotIcon(),
     autoHideMenuBar: true,
     backgroundColor: '#1b1e24',
     show: false,

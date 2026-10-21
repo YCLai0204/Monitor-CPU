@@ -24,6 +24,14 @@ const MASCOTS = [
     perchTitle: '停在其他視窗的標題列上',
     perch: '視窗移動時會跟著走，視窗關掉或被蓋住就飛走',
   },
+  {
+    id: 'bear',
+    name: '台灣黑熊',
+    roamOn: '沿著螢幕四周爬：爬上牆壁、抓著天花板倒掛',
+    roamOff: '關掉的話只在底下的工具列上慢慢走',
+    perchTitle: '爬到其他視窗上',
+    perch: '爬到視窗正上方再跳下去，之後沿著視窗四周爬',
+  },
 ]
 
 const DEFAULT_TEXT = {

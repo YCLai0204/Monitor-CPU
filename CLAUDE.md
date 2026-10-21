@@ -39,5 +39,7 @@ Windows 工具列上的吉祥物（目前是螃蟹），CPU / GPU 負載越高�
 - 在 VS Code 的終端機裡，`ELECTRON_RUN_AS_NODE=1` 會讓 electron 退化成普通 Node。啟動前先執行 `$env:ELECTRON_RUN_AS_NODE = $null`。
 - PowerShell 5.1 的 `Get-Content` / `Set-Content` 預設不是 UTF-8，會把中文檔案弄壞；修改檔案請用編輯器工具，不要用 PowerShell 讀寫。
 - 關閉 app 時只結束本專案的 electron（依路徑過濾 `Monitor-CPU\node_modules\electron`），不要結束所有叫 electron 的程序。
+- 打包後的 exe 也會被 `ELECTRON_RUN_AS_NODE=1` 影響（直接結束、沒有任何訊息），在 VS Code 終端機裡測 exe 前一樣要先清掉。
+- 沒開 Windows「開發人員模式」時，electron-builder 解壓 winCodeSign 會因為 macOS 的符號連結失敗而打包失敗。做法：設 `$env:ELECTRON_BUILDER_CACHE = "$PWD\.tmp\eb-cache"`，用 `node_modules\7zip-bin\win\x64\7za.exe` 把 winCodeSign 的 7z 解到 `.tmp\eb-cache\winCodeSign\winCodeSign-2.6.0`（那兩個 darwin 檔案的錯誤可以忽略），再打包。
 - `build.electronDist` 指向 `node_modules/electron/dist`，避免 electron-builder 的分段下載卡死，不要拿掉。
 - exe 圖示由 `npm run icon` 從 `src/renderer/crab.js` 產生；改了吉祥物長相要重新產生。

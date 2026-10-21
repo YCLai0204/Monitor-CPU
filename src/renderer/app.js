@@ -7,6 +7,7 @@ const ART = window.MascotArt || {}
  * 吉祥物清單。engine 決定動作方式：
  *   'crawl'  像螃蟹：在工具列上走，整個畫面時沿著螢幕四周爬、跳到視窗上沿著視窗爬
  *   'fly'    像小鳥：走走跳跳、起飛降落，整個畫面時到處飛、停在標題列
+ *   'swim'   像綠蠵龜：在工具列上爬、偶爾下到淺水裡游，整個畫面時在畫面上游泳（水生動物不會到其他視窗上）
  * halfW / top 是 scale = 1 時的半寬與從腳底往上的高度（邊界、滑鼠命中、標籤位置用），
  * speed 是相對於螃蟹的移動速度，stride 是走幾 px 算一步（沒寫就跟螃蟹一樣），bubbles 是低負載時吐泡泡。
  * climber 是「攀爬型」的爬行（像黑熊爬樹）：不倒掛、牆只爬到一半，要從視窗側邊爬上去，
@@ -38,6 +39,7 @@ const MASCOT_DEFS = {
     run: { on: 50, off: 45, boost: 1.5 },
   },
   spoonbill: { engine: 'fly', halfW: 48, top: 86, draw: ART.spoonbill && ART.spoonbill.draw },
+  turtle: { engine: 'swim', halfW: 44, top: 32, draw: ART.turtle && ART.turtle.draw },
 }
 
 const canvas = document.getElementById('stage')
@@ -167,6 +169,11 @@ function isFlyer() {
   return mascotDef().engine === 'fly'
 }
 
+/** 用綠蠵龜那套動作（岸上爬、淺水裡游、整個畫面時游泳）的吉祥物。 */
+function isSwimmer() {
+  return mascotDef().engine === 'swim'
+}
+
 /** 走幾 px 算一個步伐週期（scale = 1 時）。螃蟹是小碎步，大型動物步伐長，手腳才不會擺得像在抖。 */
 function strideOf() {
   return mascotDef().stride || STRIDE
@@ -208,6 +215,14 @@ function applyLayout(l) {
   const first = !displays.length
   const feetScreenX = winOrigin.x + actor.x
   const feetScreenY = winOrigin.y + feetY()
+  // 視窗搬動了：水花、泡泡、淺水這些用視窗座標記的東西也要跟著換算，不然會瞬間跳到別的地方
+  const shiftX = winOrigin.x - l.originX
+  const shiftY = winOrigin.y - l.originY
+  for (const p of turtle.particles) {
+    p.x += shiftX
+    p.y += shiftY
+  }
+  turtle.waterX += shiftX
   winOrigin = { x: l.originX, y: l.originY }
   displays = l.displays
   expanded = l.expanded
@@ -230,8 +245,13 @@ function applyLayout(l) {
     actor.lift = 0
     actor.vy = 0
     if (isFlyer()) landOn(groundPerch(), actor.x)
+    if (isSwimmer()) {
+      turtle.mode = 'land'
+      turtle.water = 0
+    }
   }
   if (isFlyer() && bird.mode === 'fly' && bird.target) bird.target = null // 範圍變了，重新挑目標
+  if (isSwimmer()) turtle.target = null
   // 版面變了，螃蟹原本貼著的邊可能已經不一樣：先放手掉下去，落地時重新貼上
   if (crawlFree() && crawl.mode !== 'held') crabFall(0, 0)
 }
@@ -301,6 +321,10 @@ function isAnimating() {
   const load = clamp(metrics.load || 0, 0, 100)
   if (drag || actor.speed > 3 || load >= 70 || bubbles.length) return true // 70% 以上會冒汗、冒熱氣
   if (foods.some((f) => f.id === null && !f.landed)) return true // 食物在往下掉
+  if (isSwimmer()) {
+    // 在水裡時波浪一直在動；在岸上停著就不用
+    return turtle.water > 0.01 || turtle.particles.length > 0 || turtle.mode !== 'land' || turtle.flinch > 0
+  }
   if (isFlyer()) {
     if (bird.mode === 'fly' || bird.hopY > 0 || bird.squash > 0 || bird.spread > 0.05) return true
     return ['walk', 'hop', 'peck', 'flutter', 'stretch'].includes(bird.act)
@@ -321,7 +345,9 @@ function renderKey(now) {
     q(actor.x, 2), q(feetY(), 2), q(actor.phase, 12), q(actor.blink, 10), q(actor.look, 20), q(actor.lookY, 20), actor.dir,
     Math.round(load), // 螃蟹的顏色、臉紅都跟著負載
   ]
-  if (isFlyer()) {
+  if (isSwimmer()) {
+    parts.push(turtle.mode, q(turtle.water, 20), q(turtle.tilt, 30), q(turtle.flinch, 20), turtle.particles.length)
+  } else if (isFlyer()) {
     parts.push(bird.mode, q(bird.flap, 12), q(bird.spread, 20), q(bird.tilt, 30), q(bird.look, 20), q(bird.headTilt, 20),
       q(bird.peck, 20), q(bird.stretch, 20), q(bird.fluff, 20), q(bird.squash, 20), q(bird.hopY, 2), q(bird.loop, 20), q(bird.tailSwing, 20))
   } else {
@@ -337,7 +363,8 @@ function renderKey(now) {
 function step(dt) {
   const load = clamp(metrics.load || 0, 0, 100)
   updateBlink(dt)
-  if (isFlyer()) stepBird(dt, load)
+  if (isSwimmer()) stepTurtle(dt, load)
+  else if (isFlyer()) stepBird(dt, load)
   else {
     // 負載高時改用衝刺（有設定 run 的動物才有）
     const run = mascotDef().run
@@ -436,7 +463,7 @@ const MISSION_SPEED = 110  // 要去別的視窗時至少用這個速度爬（px
 const CLIMB_GAP = 25       // 攀爬型貼在牆上時，身體中心離牆多遠（px，乘上 scale）
 
 function crawlFree() {
-  return !isFlyer() && roamFree()
+  return mascotDef().engine === 'crawl' && roamFree()
 }
 
 /** 其他視窗的外框（視窗座標），排除最大化和不在這台螢幕上的。 */
@@ -1578,6 +1605,338 @@ function stepFlying(dt, e, hyper) {
   }
 }
 
+// ---------------------------------------------------------------- 綠蠵龜（游泳類）
+
+const WATER_DEPTH = 14     // 淺水的深度（px，乘上 scale），龜殼大概泡進一半
+const WATER_WIDTH = 300    // 跟著綠蠵龜的那片淺水有多寬（px，乘上 scale）
+const MAX_PARTICLES = 90
+
+/**
+ * 綠蠵龜的狀態：
+ *   'land'   在工具列上爬（岸上）
+ *   'water'  在工具列上的淺水裡游（身邊出現一片淺水，有波浪、漣漪、水花）
+ *   'swim'   整個畫面模式：把整個畫面當成海，在畫面上游泳
+ *   'fall'   被放開、或從整個畫面切回工具列時往下掉
+ * 位置一樣用 actor.x / actor.lift（腹甲底部）。水生動物不會到其他視窗上。
+ */
+const turtle = {
+  mode: 'land',
+  water: 0,                // 身邊那片淺水現在有多明顯（0..1），下水、上岸時淡入淡出
+  waterX: 0,               // 那片淺水在哪裡：在水裡時跟著游，上岸或游走後留在原地慢慢退掉
+  timer: 6,                // 這個狀態還要待多久
+  vx: 0,
+  vy: 0,
+  target: null,            // 游泳時要去的點 { x, y, kind: 'wander' | 'rest' }
+  tilt: 0,
+  flinch: 0,               // 被戳到嚇一跳
+  boost: 0,                // 嚇一跳之後加速的剩餘時間
+  particles: [],           // 水花、泡泡、漣漪（視窗座標）
+  rippleT: 0,
+  bubbleT: 0,
+  seed: Math.random() * 100,
+}
+
+function turtleFree() {
+  return isSwimmer() && roamFree()
+}
+
+function setTurtlePos(x, y) {
+  actor.x = x
+  actor.lift = groundY() - y
+}
+
+function addParticle(p) {
+  if (turtle.particles.length >= MAX_PARTICLES) turtle.particles.shift()
+  turtle.particles.push(p)
+}
+
+/** 在 (x, y) 濺起一陣水花，順便在水面留一圈漣漪。 */
+function splash(x, y, n, power = 1) {
+  const s = config.scale
+  for (let i = 0; i < n; i++) {
+    addParticle({
+      kind: 'drop',
+      x: x + rand(-14, 14) * s,
+      y,
+      vx: rand(-110, 110) * s * power,
+      vy: -rand(110, 240) * s * power,
+      r: rand(1.4, 2.8) * s,
+      life: 1,
+    })
+  }
+  addParticle({ kind: 'ripple', x, y: y + 1, r: 6 * s, life: 1 })
+}
+
+function stepParticles(dt) {
+  const s = config.scale
+  for (let i = turtle.particles.length - 1; i >= 0; i--) {
+    const p = turtle.particles[i]
+    if (p.kind === 'drop' || p.kind === 'dust') {
+      p.vy += (p.kind === 'drop' ? 900 : 300) * s * dt
+      p.x += p.vx * dt
+      p.y += p.vy * dt
+      p.life -= dt * (p.kind === 'drop' ? 1.1 : 1.6)
+      if (p.kind === 'drop' && p.y > groundY()) p.life = 0
+    } else if (p.kind === 'bubble') {
+      p.y -= (22 + p.r * 5) * dt
+      p.x += Math.sin(bird.time * 3 + p.r * 7) * 12 * s * dt
+      p.life -= dt * 0.55
+    } else if (p.kind === 'ripple') {
+      p.r += 34 * s * dt
+      p.life -= dt * 1.2
+    }
+    if (p.life <= 0) turtle.particles.splice(i, 1)
+  }
+}
+
+/** 往 (tx, ty) 游過去（跟小鳥飛行一樣的轉向方式，但慢很多、轉得比較圓）。回傳離目標多遠。 */
+function swimToward(tx, ty, maxV, dt, hyper, arrive) {
+  let y = feetY()
+  const dx = tx - actor.x
+  const dy = ty - y
+  const dist = Math.hypot(dx, dy) || 1
+  const want = arrive ? Math.min(maxV, dist * 2 + 20) : maxV
+  let dvx = (dx / dist) * want
+  let dvy = (dy / dist) * want
+  if (hyper > 0) {
+    const wobble = hyper * 160 * Math.sin(bird.time * 5 + turtle.seed)
+    dvx += (-dy / dist) * wobble
+    dvy += (dx / dist) * wobble
+  }
+  const steer = 1.4 + 2 * hyper
+  turtle.vx += (dvx - turtle.vx) * Math.min(1, dt * steer)
+  turtle.vy += (dvy - turtle.vy) * Math.min(1, dt * steer)
+  setTurtlePos(actor.x + turtle.vx * dt, y + turtle.vy * dt)
+  return dist
+}
+
+/** 游泳時挑下一個目的地：繞一繞，游夠了就回工具列的淺水休息。 */
+function nextSwimTarget() {
+  const m = halfW() + 6
+  const top = cur.top + topH() + LABEL_ROOM
+  if (turtle.timer <= 0) {
+    turtle.target = { kind: 'rest', x: rand(cur.left + m, cur.right - m), y: groundY() }
+    return
+  }
+  turtle.target = { kind: 'wander', x: rand(cur.left + m, cur.right - m), y: rand(top, groundY() - topH() * 2) }
+}
+
+function stepTurtle(dt, load) {
+  const s = config.scale
+  const e = load / 100
+  const hyper = clamp((load - 70) / 30, 0, 1)
+  const m = halfW() + 6
+  bird.time += dt // 借小鳥的時間軸給泡泡和亂游用
+  stepParticles(dt)
+  turtle.flinch = Math.max(0, turtle.flinch - dt * 1.5)
+  if (turtle.boost > 0) turtle.boost -= dt
+  const boost = turtle.boost > 0 ? 1.8 : 1
+
+  // 被抓起來：四隻鰭肢亂划，身邊的水慢慢退掉
+  if (drag && drag.moved) {
+    turtle.mode = 'fall'
+    turtle.vx = 0
+    turtle.vy = 0
+    turtle.water = approach(turtle.water, 0, dt * 2)
+    turtle.tilt = approach(turtle.tilt, 0, dt * 4)
+    actor.phase += dt * 14
+    actor.speed = 0
+    return
+  }
+
+  // 從整個畫面切回工具列時，游在半空中的就往下掉
+  if (!turtleFree() && turtle.mode === 'swim') turtle.mode = 'fall'
+
+  switch (turtle.mode) {
+    case 'fall': {
+      actor.vy += GRAVITY * dt
+      actor.lift -= actor.vy * dt
+      turtle.tilt = approach(turtle.tilt, 0, dt * 4)
+      actor.phase += dt * 10
+      if (actor.lift <= 0) {
+        actor.lift = 0
+        actor.vy = 0
+        // 掉下來的時候順便下水，水花比較好看
+        turtle.mode = 'water'
+        turtle.waterX = actor.x
+        turtle.timer = rand(4, 8)
+        splash(actor.x, groundY() - WATER_DEPTH * s, 14, 1.1)
+        if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+      }
+      return
+    }
+
+    case 'land': {
+      // 岸上爬得很慢；低負載時爬一爬就停下來
+      turtle.water = approach(turtle.water, 0, dt * 1.2)
+      turtle.tilt = approach(turtle.tilt, 0, dt * 4)
+      let speed = (6 + 50 * Math.pow(e, 1.2) + 50 * hyper) * s * boost
+      if (actor.pause > 0) {
+        actor.pause -= dt
+        speed = 0
+      } else {
+        if (e < 0.4 && Math.random() < dt * 0.25) actor.pause = rand(1, 3)
+        if (Math.random() < dt * 0.05) actor.dir *= -1
+      }
+      actor.speed = approach(actor.speed, speed, dt * 60 * s)
+      actor.x += actor.dir * actor.speed * dt
+      if (actor.x < cur.left + m) { actor.x = cur.left + m; actor.dir = 1 }
+      if (actor.x > cur.right - m) { actor.x = cur.right - m; actor.dir = -1 }
+      // 每往前撐一下，走 22px
+      actor.phase += (actor.speed * dt / (22 * s)) * Math.PI * 2
+      actor.lift = 0
+      turtle.timer -= dt
+      if (turtle.timer <= 0) {
+        // 下水：身邊冒出一片淺水，濺起水花
+        turtle.mode = 'water'
+        turtle.waterX = actor.x
+        turtle.timer = rand(8, 18) * (1 + e)
+        splash(actor.x + actor.dir * 20 * s, groundY() - WATER_DEPTH * s, 12)
+      }
+      return
+    }
+
+    case 'water': {
+      turtle.water = approach(turtle.water, 1, dt * 1.6)
+      turtle.waterX = actor.x
+      turtle.tilt = approach(turtle.tilt, 0, dt * 4)
+      const speed = (22 + 130 * Math.pow(e, 1.1) + 110 * hyper) * s * boost
+      actor.speed = approach(actor.speed, speed, dt * 120 * s)
+      if (Math.random() < dt * 0.08) actor.dir *= -1
+      actor.x += actor.dir * actor.speed * dt
+      if (actor.x < cur.left + m) { actor.x = cur.left + m; actor.dir = 1 }
+      if (actor.x > cur.right - m) { actor.x = cur.right - m; actor.dir = -1 }
+      actor.lift = 0
+      actor.phase += dt * (3 + 5 * e + 4 * hyper) // 划水
+      // 划水的漣漪；游得快的時候濺起水花
+      turtle.rippleT -= dt
+      if (turtle.rippleT <= 0) {
+        turtle.rippleT = 0.55 - 0.3 * e
+        addParticle({ kind: 'ripple', x: actor.x + actor.dir * 16 * s, y: groundY() - WATER_DEPTH * s + 1, r: 5 * s, life: 1 })
+      }
+      if (e > 0.5 && Math.random() < dt * (1 + 4 * hyper)) splash(actor.x + actor.dir * 22 * s, groundY() - WATER_DEPTH * s, 4, 0.7)
+      turtle.timer -= dt
+      if (turtle.timer <= 0) {
+        if (turtleFree()) {
+          // 游出淺水，往上游到畫面上
+          turtle.mode = 'swim'
+          turtle.timer = rand(14, 30) * (1 - 0.4 * e)
+          turtle.vx = actor.dir * actor.speed
+          turtle.vy = -rand(60, 120) * s
+          turtle.target = null
+          splash(actor.x, groundY() - WATER_DEPTH * s, 10)
+        } else if (e < 0.6 || Math.random() < 0.3) {
+          // 上岸：水慢慢退掉，身上滴下水珠（負載高時比較喜歡待在水裡）
+          turtle.mode = 'land'
+          turtle.timer = rand(8, 20) * (1 - 0.6 * e)
+          for (let i = 0; i < 6; i++) addParticle({ kind: 'drop', x: actor.x + rand(-20, 20) * s, y: feetY() - rand(10, 24) * s, vx: rand(-20, 20) * s, vy: 0, r: rand(1.2, 2) * s, life: 1 })
+        } else {
+          turtle.timer = rand(6, 12)
+        }
+      }
+      return
+    }
+
+    case 'swim': {
+      turtle.water = approach(turtle.water, 0, dt * 1.5)
+      if (!turtle.target) nextSwimTarget()
+      const t = turtle.target
+      turtle.timer -= dt
+      const maxV = (55 + 220 * e + 180 * hyper) * s * boost
+      const dist = swimToward(t.x, t.y, maxV, dt, hyper, t.kind !== 'wander')
+      actor.speed = Math.hypot(turtle.vx, turtle.vy)
+      if (Math.abs(turtle.vx) > 8) actor.dir = turtle.vx > 0 ? 1 : -1
+      turtle.tilt = approach(turtle.tilt, clamp(turtle.vy / Math.max(1, maxV), -1, 1) * actor.dir * 0.5, dt * 3)
+      actor.phase += dt * (2.2 + 4 * e + 4 * hyper) * boost
+      // 身後一串泡泡
+      turtle.bubbleT -= dt
+      if (turtle.bubbleT <= 0) {
+        turtle.bubbleT = rand(0.12, 0.3)
+        addParticle({ kind: 'bubble', x: actor.x - actor.dir * 26 * s, y: feetY() - rand(6, 20) * s, r: rand(1.6, 3.6) * s, life: 1 })
+      }
+      // 邊界
+      actor.x = clamp(actor.x, cur.left + m, cur.right - m)
+      if (feetY() < cur.top + topH() + 10) setTurtlePos(actor.x, cur.top + topH() + 10)
+      if (feetY() > groundY()) setTurtlePos(actor.x, groundY())
+
+      if (t.kind === 'wander' && dist < 40) {
+        turtle.target = null
+      } else if (t.kind === 'rest' && dist < 6) {
+        // 游回工具列，落進淺水裡休息
+        turtle.mode = 'water'
+        turtle.waterX = actor.x
+        turtle.timer = rand(8, 16) * (1 - 0.4 * e)
+        turtle.target = null
+        setTurtlePos(actor.x, groundY())
+        splash(actor.x, groundY() - WATER_DEPTH * s, 12)
+      } else if (turtle.timer < -25) {
+        turtle.target = null // 太久了還沒到（目標一直跑掉），換一個
+      }
+      return
+    }
+
+    default:
+      turtle.mode = 'land'
+  }
+}
+
+/** 被戳到：嚇一跳、加速游走（海龜不會縮頭）。 */
+function startleTurtle(fromX) {
+  turtle.flinch = 1
+  turtle.boost = 1.4
+  actor.pause = 0
+  actor.dir = actor.x >= fromX ? 1 : -1
+  if (turtle.mode === 'swim') {
+    turtle.vx = actor.dir * 220 * config.scale
+    turtle.target = null
+  } else if (turtle.mode === 'water') {
+    splash(actor.x, groundY() - WATER_DEPTH * config.scale, 8)
+  }
+}
+
+/** 綠蠵龜這一格的畫面：淺水（後）→ 烏龜 → 淺水（前）→ 水花泡泡；在畫面上游泳時身邊有一圈淡淡的水光。 */
+function renderTurtle(now, rx, ry) {
+  const art = ART.turtle
+  const s = config.scale
+  const load = clamp(metrics.load || 0, 0, 100)
+  const water = {
+    x: turtle.waterX,
+    width: WATER_WIDTH * s,
+    surfaceY: groundY() - WATER_DEPTH * s,
+    groundY: groundY(),
+    amount: turtle.water,
+    time: now,
+    scale: s,
+  }
+  art.drawWaterBack(ctx, water)
+  if (turtle.mode === 'swim') {
+    // 在畫面上游泳：身邊一圈淡淡的藍光，看起來像在水裡
+    const g = ctx.createRadialGradient(rx, ry - 14 * s, 4 * s, rx, ry - 14 * s, 70 * s)
+    g.addColorStop(0, `rgba(80, 170, 220, 0.16)`)
+    g.addColorStop(1, 'rgba(80, 170, 220, 0)')
+    ctx.fillStyle = g
+    ctx.fillRect(rx - 72 * s, ry - 86 * s, 144 * s, 144 * s)
+  }
+  const pose = drag && drag.moved ? 'held' : turtle.mode === 'land' || turtle.mode === 'fall' ? 'land' : 'swim'
+  ctx.save()
+  ctx.translate(rx, ry)
+  art.draw(ctx, {
+    scale: s,
+    dir: actor.dir,
+    phase: actor.phase,
+    pose,
+    tilt: turtle.tilt,
+    flinch: turtle.flinch,
+    heat: clamp((load - 55) / 45, 0, 1),
+    blink: actor.blink,
+    shadow: turtle.water < 0.5 && actor.lift <= 0,
+    time: now,
+  })
+  ctx.restore()
+  art.drawWaterFront(ctx, water)
+  art.drawParticles(ctx, turtle.particles, s)
+}
+
 /** 往 target 靠近，每秒最多 rate。 */
 function approach(v, target, rate) {
   if (v < target) return Math.min(target, v + rate)
@@ -1632,6 +1991,20 @@ function render(now) {
   const boxes = [{ x: rx - 220 * scale, y: ry - 240 * scale, w: 440 * scale, h: 400 * scale }]
   const foodSpots = drawableFoods()
   for (const p of foodSpots) boxes.push({ x: p.x - 30 * scale, y: p.y - 40 * scale, w: 60 * scale, h: 46 * scale })
+  if (isSwimmer() && turtle.water > 0.01) {
+    // 淺水上岸後會留在原地慢慢退掉，可能已經不在烏龜身邊
+    const w = WATER_WIDTH * scale
+    boxes.push({ x: turtle.waterX - w / 2 - 4, y: groundY() - (WATER_DEPTH + 8) * scale, w: w + 8, h: (WATER_DEPTH + 12) * scale })
+  }
+  if (isSwimmer() && turtle.particles.length) {
+    // 水花和泡泡可能飛得比較遠，另外框起來
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+    for (const p of turtle.particles) {
+      const r = (p.r || 3) + 4 * scale
+      x1 = Math.min(x1, p.x - r); y1 = Math.min(y1, p.y - r); x2 = Math.max(x2, p.x + r); y2 = Math.max(y2, p.y + r)
+    }
+    boxes.push({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 })
+  }
   if (lastBox) for (const b of lastBox) ctx.clearRect(b.x, b.y, b.w, b.h)
   else ctx.clearRect(0, 0, viewW, viewH)
   for (const b of boxes) ctx.clearRect(b.x, b.y, b.w, b.h)
@@ -1643,6 +2016,11 @@ function render(now) {
     ctx.translate(p.x, p.y)
     mascotDef().food(ctx, { scale, time: now })
     ctx.restore()
+  }
+
+  if (isSwimmer()) {
+    renderTurtle(now, rx, ry)
+    return
   }
 
   ctx.save()
@@ -1877,7 +2255,23 @@ window.addEventListener('mouseup', (e) => {
   // 落在螢幕邊緣或縫隙時，收進所在螢幕的範圍內
   const margin = halfW() + 6
   actor.x = clamp(actor.x, cur.left + margin, cur.right - margin)
-  if (crawlFree()) {
+  if (isSwimmer()) {
+    if (turtleFree()) {
+      // 整個畫面就是海：放開就從那裡繼續游
+      turtle.mode = 'swim'
+      turtle.target = null
+      turtle.vx = 0
+      turtle.vy = 0
+      if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+    } else if (actor.lift <= 0) {
+      actor.lift = 0
+      turtle.mode = 'land'
+      if (expanded) window.crabAPI.dropOnDisplay(cur.id)
+    } else {
+      turtle.mode = 'fall' // 掉下去，落進淺水裡
+      actor.vy = 0
+    }
+  } else if (crawlFree()) {
     // 放開就往下掉，落在第一個碰到的視窗頂端或工具列上
     crabFall(0, 0)
     if (expanded) window.crabAPI.dropOnDisplay(cur.id)
@@ -1911,6 +2305,10 @@ window.addEventListener('click', (e) => {
   if (isFlyer()) {
     // 被戳到會嚇一跳飛走
     takeOff(e.clientX)
+    return
+  }
+  if (isSwimmer()) {
+    startleTurtle(e.clientX)
     return
   }
   if (crawlFree()) {
@@ -1951,6 +2349,7 @@ document.addEventListener('mouseleave', () => {
 window.crabAPI.onMetrics((data) => { metrics = data })
 window.crabAPI.onConfig((data) => {
   const wasFlyer = isFlyer()
+  const wasSwimmer = isSwimmer()
   config = { ...config, ...data }
   // 吉祥物被隱藏時主程序已經把穿透設回去了，這邊的狀態要跟著重置
   if (config.showCrab === false) {
@@ -1961,6 +2360,13 @@ window.crabAPI.onConfig((data) => {
   if (isFlyer() && !wasFlyer) {
     actor.lift = 0
     landOn(groundPerch(), actor.x)
+  }
+  // 換成綠蠵龜（或從綠蠵龜換走）：從岸上開始，水花泡泡清掉
+  if (isSwimmer() !== wasSwimmer) {
+    actor.lift = 0
+    turtle.mode = 'land'
+    turtle.water = 0
+    turtle.particles.length = 0
   }
   resize()
 })

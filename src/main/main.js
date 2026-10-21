@@ -67,7 +67,9 @@ const DEFAULTS = {
 }
 
 // 有哪些吉祥物。新增動物時加在這裡，畫法與動作寫在 renderer，設定視窗的說明寫在 settings.js 的 MASCOTS
-const MASCOTS = ['crab', 'bird', 'bear', 'spoonbill']
+const MASCOTS = ['crab', 'bird', 'bear', 'spoonbill', 'turtle']
+// 水生動物不會到其他視窗上，選牠們的時候不用盯著其他視窗
+const NO_WINDOW_MASCOTS = ['turtle']
 // 系統匣圖示：螃蟹跟著負載變色、小鳥搖頭動畫，其他動物用 window.MascotArt[id].renderIcon 畫一張固定的
 const STATIC_TRAY_MASCOTS = MASCOTS.filter((id) => id !== 'crab' && id !== 'bird')
 
@@ -276,9 +278,9 @@ function createWindow() {
 
 // ---------------------------------------------------------------- 其他視窗（小鳥停的標題列、螃蟹爬的外框）
 
-/** 只有在整個螢幕模式、而且開了「到其他視窗上」時才需要盯著其他視窗。 */
+/** 只有在整個螢幕模式、而且開了「到其他視窗上」時才需要盯著其他視窗（水生動物不會到其他視窗上）。 */
 function applyWindowWatcher() {
-  const want = freeRoam() && config.perchWindows && config.showCrab
+  const want = freeRoam() && config.perchWindows && config.showCrab && !NO_WINDOW_MASCOTS.includes(config.mascot)
   if (want) windowWatcher.start()
   else windowWatcher.stop()
 }

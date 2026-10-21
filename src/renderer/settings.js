@@ -40,6 +40,15 @@ const MASCOTS = [
     perchTitle: '停在其他視窗的標題列上',
     perch: '視窗移動時會跟著走，視窗關掉或被蓋住就飛走',
   },
+  {
+    id: 'turtle',
+    name: '綠蠵龜',
+    roamOn: '把整個畫面當成海慢慢游，累了回到工具列的淺水裡休息',
+    roamOff: '關掉的話在工具列上爬，偶爾下到淺水裡游',
+    noWindows: true, // 水生動物不會到其他視窗上
+    perchTitle: '到其他視窗上',
+    perch: '綠蠵龜是水生動物，不會到其他視窗上',
+  },
 ]
 
 const DEFAULT_TEXT = {
@@ -86,7 +95,7 @@ function render(next) {
   $('#perch-title').textContent = text.perchTitle
   $('#perch-desc').textContent = text.perch
   const perchRow = $('#perch-row')
-  const perchOk = !!c.roamScreen
+  const perchOk = !!c.roamScreen && !text.noWindows // 水生動物不會到其他視窗上
   perchRow.style.opacity = perchOk ? '' : '0.45'
   perchRow.querySelector('input').disabled = !perchOk
 

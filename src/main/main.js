@@ -67,7 +67,7 @@ const DEFAULTS = {
 }
 
 // 有哪些吉祥物。新增動物時加在這裡，畫法與動作寫在 renderer，設定視窗的說明寫在 settings.js 的 MASCOTS
-const MASCOTS = ['crab', 'bird', 'bear', 'spoonbill', 'turtle']
+const MASCOTS = ['crab', 'bird', 'bear', 'spoonbill', 'turtle', 'pangolin']
 // 水生動物不會到其他視窗上，選牠們的時候不用盯著其他視窗
 const NO_WINDOW_MASCOTS = ['turtle']
 // 系統匣圖示：螃蟹跟著負載變色、小鳥搖頭動畫，其他動物用 window.MascotArt[id].renderIcon 畫一張固定的

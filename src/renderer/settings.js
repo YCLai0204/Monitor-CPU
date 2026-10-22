@@ -49,6 +49,14 @@ const MASCOTS = [
     perchTitle: '到其他視窗上',
     perch: '綠蠵龜是水生動物，不會到其他視窗上',
   },
+  {
+    id: 'pangolin',
+    name: '台灣穿山甲',
+    roamOn: '沿著螢幕四周走：用爪子扒著牆往上爬，但不會倒掛',
+    roamOff: '關掉的話只在底下的工具列上走',
+    perchTitle: '爬到其他視窗上',
+    perch: '從視窗側邊爬上去趴著；沒被移動的視窗上還會冒出白蟻窩',
+  },
 ]
 
 const DEFAULT_TEXT = {

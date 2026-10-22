@@ -12,7 +12,11 @@ const ART = window.MascotArt || {}
  * speed 是相對於螃蟹的移動速度，stride 是走幾 px 算一步（沒寫就跟螃蟹一樣），bubbles 是低負載時吐泡泡。
  * climber 是「攀爬型」的爬行（像黑熊爬樹）：不倒掛、牆只爬到一半，要從視窗側邊爬上去，
  * 所以只去底部貼近工具列、搆得到的視窗；food 是畫食物的方法，有的話會在沒被移動的視窗上偷偷放食物。
+ * foodReach 是吃東西時嘴巴離腳底中心多遠（scale = 1 時）：有的話會停在食物旁邊、面向食物吃，
+ * 食物吃的時候留在原地照常畫（像穿山甲舔蟻丘）；沒有的話走到食物正上方拿起來吃（像黑熊捧著吃）。
  * run 是負載高時改用四腳衝刺：負載到 on% 開始、掉到 off% 以下才停（避免在門檻附近一直切換），速度乘上 boost。
+ * curl 是被戳到時捲成一顆球（像穿山甲）：原地縮著不動，過幾秒才打開；扒在牆上時會直接掉下去。
+ * 有 curl 的動物被抓著、在空中、衝刺時也是一顆球（BALL_POSES），捲起來、打開的過程由畫法依 curl 參數（0..1）畫。
  *
  * 新增動物：寫一支畫法（掛到 window.MascotArt，見 bear.js），在 index.html 載入，
  * 在這裡加一筆，主程序與設定視窗的 MASCOTS 也各加一筆。
@@ -40,6 +44,19 @@ const MASCOT_DEFS = {
   },
   spoonbill: { engine: 'fly', halfW: 48, top: 86, draw: ART.spoonbill && ART.spoonbill.draw },
   turtle: { engine: 'swim', halfW: 44, top: 32, draw: ART.turtle && ART.turtle.draw },
+  pangolin: {
+    engine: 'crawl',
+    climber: true,
+    curl: true,
+    halfW: 48,
+    top: 40,
+    speed: 0.6,
+    stride: 30,
+    draw: ART.pangolin && ART.pangolin.draw,
+    food: ART.pangolin && ART.pangolin.drawFood,
+    foodReach: 58, // 要跟 pangolin.js 的 MOUND_X 一致
+    run: { on: 60, off: 55, boost: 1.6 },
+  },
 }
 
 const canvas = document.getElementById('stage')
@@ -82,6 +99,8 @@ const actor = {
   lookY: 0,                // 爬牆時往上（-1）或往下（1）看
   lastY: 0,                // 上一格的腳底高度，用來判斷正在往上還是往下爬
   pause: 0,
+  curl: 0,                 // 捲成球的剩餘時間（有設定 curl 的動物才有）
+  ballK: 0,                // 捲成球捲到幾成（0 平常的樣子 … 1 整顆球），捲起來、打開時慢慢變
   blink: 0,
   nextBlink: 2 + Math.random() * 4,
 }
@@ -146,6 +165,8 @@ const crawl = {
   exitSide: null,          // 要從視窗哪一側爬下來
   sitT: 0,                 // 坐著的剩餘時間
   eatT: 0,                 // 吃東西的剩餘時間
+  eatFood: null,           // 站在旁邊吃的動物（foodReach）正在吃的食物，吃的時候留在原地照常畫
+  eatDir: 0,               // 站在旁邊吃的時候面向哪邊
 }
 
 const bubbles = []
@@ -382,6 +403,7 @@ function isAnimating() {
     return ['walk', 'hop', 'peck', 'flutter', 'stretch'].includes(bird.act)
   }
   if (crawl.eatT > 0) return true // 咀嚼
+  if (actor.ballK > 0 && actor.ballK < 1) return true // 正在捲起來或打開
   return crawlFree() ? crawl.mode !== 'walk' : actor.lift > 0
 }
 
@@ -403,7 +425,7 @@ function renderKey(now) {
     parts.push(bird.mode, q(bird.flap, 12), q(bird.spread, 20), q(bird.tilt, 30), q(bird.look, 20), q(bird.headTilt, 20),
       q(bird.peck, 20), q(bird.stretch, 20), q(bird.fluff, 20), q(bird.squash, 20), q(bird.hopY, 2), q(bird.loop, 20), q(bird.tailSwing, 20))
   } else {
-    parts.push(crawlPose(), wallSide(), q(crawl.angle, 30), q(crawl.nx, 10), q(crawl.ny, 10))
+    parts.push(crawlPose(), wallSide(), q(crawl.angle, 30), q(crawl.nx, 10), q(crawl.ny, 10), q(actor.ballK, 40))
   }
   for (const f of drawableFoods()) parts.push(q(f.x, 2), q(f.y, 2))
   if (foods.length) parts.push(Math.floor(now / 80)) // 食物偶爾會閃一下
@@ -423,7 +445,9 @@ function step(dt) {
     if (!run) actor.running = false
     else if (load >= run.on) actor.running = true
     else if (load < run.off) actor.running = false
+    if (actor.curl > 0) actor.curl -= dt
     stepCrawl(dt, load)
+    if (mascotDef().curl) actor.ballK = approach(actor.ballK, BALL_POSES.includes(crawlPose()) ? 1 : 0, dt / CURL_TIME)
     if (mascotDef().food) updateFood(dt)
     // 走路時臉轉向前進方向，停下來或爬牆時慢慢轉回正面（螃蟹的畫法不看這個）；停在牆上時東張西望
     const pose = crawlPose()
@@ -472,6 +496,10 @@ function stepCrawl(dt, load) {
       // 完全站穩後，把視窗從「涵蓋所有螢幕」縮回這一台螢幕的底部，之後就固定在這台移動
       if (actor.lift === 0 && expanded) dropOnDisplay(cur.id)
     }
+    return
+  }
+  if (curled()) {
+    actor.speed = 0
     return
   }
 
@@ -829,7 +857,26 @@ function climbSideOf(r) {
 /** 這一格要畫的食物位置（不是會吃東西的動物、或不在整個畫面模式就不畫）。 */
 function drawableFoods() {
   if (!mascotDef().food || !crawlFree() || !config.perchWindows) return []
-  return foods.map(foodPos).filter(Boolean)
+  // 站在旁邊吃的動物（foodReach）：吃的時候食物留在原地照常畫
+  const list = crawl.eatT > 0 && crawl.eatFood ? [...foods, crawl.eatFood] : foods
+  return list.map(foodPos).filter(Boolean)
+}
+
+/**
+ * 要停在哪裡吃食物 p：一般走到正上方；有 foodReach 的停在旁邊，嘴巴剛好碰到食物。
+ * 優先站在現在所在的那一側，那一側超出 lo..hi（這段可以走的範圍）就換另一側，兩邊都不夠就盡量靠近。
+ * dir 是吃的時候面向哪邊。
+ */
+function eatSpot(p, lo, hi) {
+  const reach = (mascotDef().foodReach || 0) * config.scale
+  if (!reach) return { x: p.x, dir: 0 }
+  const near = actor.x <= p.x ? -1 : 1
+  let x = p.x + near * reach
+  if (x < lo || x > hi) {
+    const other = p.x - near * reach
+    x = other >= lo && other <= hi ? other : clamp(x, lo, hi)
+  }
+  return { x, dir: x <= p.x ? 1 : -1 }
 }
 
 /**
@@ -944,9 +991,14 @@ function updateFood(dt) {
   if (top) placeFood(r.id, rand(top.x1 + m, top.x2 - m))
 }
 
-/** 走到食物旁邊：拿起來坐著吃。拿到就開始算冷卻，吃到一半不會又冒出一顆。 */
-function startEating(food) {
+/**
+ * 走到食物旁邊：拿起來坐著吃（有 foodReach 的是站在旁邊吃，食物留在原地，dir 是面向哪邊）。
+ * 拿到就開始算冷卻，吃到一半不會又冒出一顆。
+ */
+function startEating(food, dir = 0) {
   foods.splice(foods.indexOf(food), 1)
+  crawl.eatFood = mascotDef().foodReach ? food : null
+  crawl.eatDir = dir
   lastAte = performance.now()
   crawl.eatT = 4
   crawl.sitT = 0
@@ -980,10 +1032,11 @@ function stepClimber(dt, e, path, onWindow) {
       crawl.sitT = 0 // 站起來走過去，不是坐著滑過去
       const p = foodPos(food)
       if (p) {
-        goal = chainPos(path, chain, fracAt(path, p.x, p.y))
+        const spot = eatSpot(p, rect.l + m, rect.r - m)
+        goal = chainPos(path, chain, fracAt(path, spot.x, p.y))
         speed = Math.max(speed, MISSION_SPEED * scale * 0.7)
         if (Math.abs(goal - u) < 3) {
-          startEating(food)
+          startEating(food, spot.dir)
           goal = null
         }
       }
@@ -1047,10 +1100,11 @@ function stepClimber(dt, e, path, onWindow) {
       crawl.mission = null
       busy = true
       const p = foodPos(food)
-      goal = chainPos(path, chain, fracAt(path, p.x, groundY()))
+      const spot = eatSpot(p, cur.left + m, cur.right - m)
+      goal = chainPos(path, chain, fracAt(path, spot.x, groundY()))
       speed = Math.max(speed, MISSION_SPEED * scale * 0.7)
       if (Math.abs(goal - u) < 3) {
-        startEating(food)
+        startEating(food, spot.dir)
         goal = null
       }
     } else if (food && food.id === null) {
@@ -1105,6 +1159,11 @@ function stepClimber(dt, e, path, onWindow) {
     crawl.wallRange = [uMin, uMax]
   }
 
+  if (curled()) {
+    // 捲成球：原地不動，位置還是照常對齊（視窗被拖動時跟著走）
+    goal = null
+    speed = actor.speed = 0
+  }
   if (goal !== null) {
     crawl.move = goal >= u ? 1 : -1
     speed = Math.min(speed, Math.abs(goal - u) / dt)
@@ -1117,6 +1176,7 @@ function stepClimber(dt, e, path, onWindow) {
   u = next
   crawl.frac = chainFrac(path, chain, u)
   placeOnLoop(path, dt, step)
+  if (crawl.eatT > 0 && crawl.eatDir) actor.dir = crawl.eatDir // 站在旁邊吃的時候面向食物
 }
 
 /** 依 crawl.frac 擺好位置、法線、角度與腳步（螃蟹和黑熊共用）。 */
@@ -1248,6 +1308,7 @@ function stepCrawlFree(dt, load) {
     if (idleChance > 0 && Math.random() < idleChance * dt * 10) actor.pause = 0.6 + Math.random() * 2.2
     if (Math.random() < 0.08 * dt) crawl.move *= -1
   }
+  if (curled()) speed = actor.speed = 0
   actor.speed += (speed - actor.speed) * Math.min(1, dt * 4)
 
   const step = actor.speed * dt
@@ -2140,6 +2201,7 @@ function render(now) {
     scale,
     load,
     pose: crawlPose(),
+    curl: mascotDef().curl ? actor.ballK : undefined,
     wall: wallSide(),
     look: actor.look,
     lookY: actor.lookY,
@@ -2157,12 +2219,14 @@ function render(now) {
  * 爬行類現在的姿勢，給畫法參考（螃蟹不分）：
  * 'walk' 站在地上或視窗上 | 'climb' 貼在牆上或視窗側邊 | 'ceiling' 倒掛 | 'fall' 在空中 | 'held' 被抓著
  * | 'sit' 坐在視窗上 | 'eat' 坐著吃東西（攀爬型才有）| 'run' 負載高時在地上衝刺（有設定 run 的才有）
+ * | 'curl' 被戳到捲成球（有設定 curl 的才有）
  */
 function crawlPose() {
   if (drag && drag.moved) return 'held'
-  if (!crawlFree()) return actor.lift > 0 ? 'fall' : groundPose()
+  if (!crawlFree()) return actor.lift > 0 ? 'fall' : curled() ? 'curl' : groundPose()
   if (crawl.mode === 'held') return 'held'
   if (crawl.mode === 'fall') return 'fall'
+  if (curled()) return 'curl'
   // 坐著、吃東西只在停下來時才畫，移動中一定是走路的姿勢
   const still = actor.speed < 5
   if (crawl.eatT > 0 && still) return 'eat'
@@ -2170,6 +2234,21 @@ function crawlPose() {
   if (crawl.ny > 0.7) return 'ceiling'
   if (Math.abs(crawl.nx) > 0.7) return 'climb'
   return groundPose()
+}
+
+const BALL_POSES = ['curl', 'held', 'fall', 'run'] // 有 curl 的動物在這些姿勢時是一顆球
+const CURL_TIME = 0.35 // 捲起來、打開各要幾秒
+
+/** 正捲成一顆球（有設定 curl 的動物才會）。 */
+function curled() {
+  return actor.curl > 0 && !!mascotDef().curl
+}
+
+/** 被戳到：捲成球縮著；扒在牆上的話手一放就掉下去。 */
+function curlUp() {
+  actor.curl = rand(2.5, 4)
+  actor.speed = 0
+  if (crawlFree() && crawl.mode === 'walk' && wallSide()) crawlFall(crawl.nx * 60, 0)
 }
 
 /** 在地上（工具列、視窗頂端）時是走路還是衝刺；停下來時一樣站著。 */
@@ -2390,6 +2469,11 @@ window.addEventListener('click', (e) => {
   }
   if (isSwimmer()) {
     startleSwimmer(e.clientX)
+    return
+  }
+  if (mascotDef().curl) {
+    // 被戳到捲成一顆球
+    curlUp()
     return
   }
   if (crawlFree()) {

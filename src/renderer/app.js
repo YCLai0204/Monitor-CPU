@@ -2801,15 +2801,18 @@ function updateSpeech() {
 // ---------------------------------------------------------------- 滑鼠
 
 // 視窗預設整片穿透（工具列和其他視窗才點得到），只有游標壓在吉祥物身上時才短暫接管。
+const HIT_PAD = 6 // 判定範圍往外多放幾 px（乘上 scale），移動中的吉祥物比較抓得到
+
 function overMascot(px, py) {
+  const pad = HIT_PAD * config.scale
   if (crawlFree()) {
     const c = crawlCenter()
-    const r = Math.max(halfW(), topH() * 0.5) * 0.85
+    const r = Math.max(halfW(), topH() * 0.5) * 0.85 + pad
     return Math.abs(px - c.x) <= r && Math.abs(py - c.y) <= r
   }
   const feet = feetY() - (isFlyer() ? bird.hopY : 0)
-  const hw = halfW()
-  const top = feet - topH()
+  const hw = halfW() + pad
+  const top = feet - topH() - pad
   return px >= actor.x - hw && px <= actor.x + hw && py >= top && py <= feet + 4
 }
 
@@ -2868,7 +2871,9 @@ function throwVelocity(trail) {
   return { vx, vy }
 }
 
+let lastRealMove = -Infinity // 上一次收到真的 mousemove 的時間（主程序讀游標位置的備案要不要用，看這個）
 window.addEventListener('mousemove', (e) => {
+  lastRealMove = performance.now()
   lastMouse = { x: e.clientX, y: e.clientY }
   if (drag) {
     if (!drag.moved && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > DRAG_THRESHOLD) {
@@ -3058,6 +3063,9 @@ document.addEventListener('mouseleave', () => {
 // 靠這個發現游標移到吉祥物上、也靠這個發現游標離開
 window.crabAPI.onCursor((pos) => {
   if (drag) return
+  // 最近有收到真的滑鼠事件就不用它：主程序讀的位置可能比較舊，剛移到吉祥物身上就停住按下去時，
+  // 舊位置會把穿透打開，那一下就按到後面去了（有時候拖不動）。收不到滑鼠事件時才靠它
+  if (performance.now() - lastRealMove < 400) return
   lastMouse = pos
   setHover(!!pos && overMascot(pos.x, pos.y))
 })

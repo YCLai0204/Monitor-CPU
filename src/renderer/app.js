@@ -20,6 +20,7 @@ const ART = window.MascotArt || {}
  * 被戳到也會跳；spout 是浮在水面時偶爾從噴氣孔噴水（位置是畫法的 blowhole）。
  * curl 是被戳到時捲成一顆球（像穿山甲）：原地縮著不動，過幾秒才打開；扒在牆上時會直接掉下去。
  * loseClaw 是被拖著用力甩之後會甩掉一隻螯、過一陣子再長回來（彩蛋，像螃蟹）。
+ * faintFlip 是滿載累倒時翻成肚子朝天（像螃蟹、穿山甲），沒有的話往後倒、側躺。
  * 有 curl 的動物被抓著、在空中、衝刺時也是一顆球（BALL_POSES），捲起來、打開的過程由畫法依 curl 參數（0..1）畫。
  *
  * 新增動物：寫一支畫法（掛到 window.MascotArt，見 bear.js），在 index.html 載入，
@@ -32,6 +33,7 @@ const MASCOT_DEFS = {
     top: 68,
     speed: 1,
     bubbles: true,
+    faintFlip: true,
     loseClaw: true,
     draw: (c, o) => window.CrabArt.drawCrab(c, { ...o, hue: loadToHue(o.load) }),
   },
@@ -72,6 +74,7 @@ const MASCOT_DEFS = {
     engine: 'crawl',
     climber: true,
     curl: true,
+    faintFlip: true,
     halfW: 48,
     top: 40,
     speed: 0.6,
@@ -284,7 +287,13 @@ function applyLayout(l) {
   const y = feetScreenY - winOrigin.y
   const at = displays.find((d) => x >= d.left && x < d.right && y >= d.top && y <= d.bottom)
   const fits = y - topH() >= 0 // 頭還在視窗裡（從整個螢幕切回工具列時，飛太高的小鳥就放不下了）
-  if (!first && at && fits && (expanded || at === home)) {
+  // 彩蛋的劇情進行中：位置照劇本（可能在畫面外準備走進來、在工具列底下等著被夾上來），只換算座標、不要拉回地面
+  const scripted = !!(feast || (scene && scene.hold))
+  if (!first && scripted) {
+    cur = at || home
+    actor.x = x
+    actor.lift = cur.ground - y
+  } else if (!first && at && fits && (expanded || at === home)) {
     cur = at
     actor.x = x
     actor.lift = Math.max(0, cur.ground - y)
@@ -303,7 +312,7 @@ function applyLayout(l) {
   if (isFlyer() && bird.mode === 'fly' && bird.target) bird.target = null // 範圍變了，重新挑目標
   if (isSwimmer()) turtle.target = null
   // 版面變了，螃蟹原本貼著的邊可能已經不一樣：先放手掉下去，落地時重新貼上
-  if (crawlFree() && crawl.mode !== 'held') crawlFall(0, 0)
+  if (crawlFree() && crawl.mode !== 'held' && !scripted) crawlFall(0, 0)
 
   // 新版面到了：馬上畫在正確的位置，不要等下一格
   if (!first) {
@@ -423,7 +432,7 @@ function isAnimating() {
   const load = clamp(metrics.load || 0, 0, 100)
   if (drag || actor.speed > 3 || load >= 70 || bubbles.length) return true // 70% 以上會冒汗、冒熱氣
   if (eggAnimating()) return true // 頭暈的星星、滾走、甩掉的螯
-  if (feast || (roe && (roe.drop > 0 || roe.hatchT))) return true // 黑熊吃鮭魚、魚卵在沉、在孵化
+  if (feast || scene || (roe && (roe.drop > 0 || roe.hatchT))) return true // 彩蛋的劇情、魚卵在沉、在孵化
   if (Math.abs(actor.vx) > 5 || actor.tumble) return true // 被丟出去後在地上滑、還沒翻正
   if (foods.some((f) => f.id === null && !f.landed)) return true // 食物在往下掉
   if (isSwimmer()) {
@@ -461,6 +470,7 @@ function renderKey(now) {
   }
   for (const f of drawableFoods()) parts.push(q(f.x, 2), q(f.y, 2))
   if (roe) parts.push('roe', q(toWX(roe.sx), 2)) // 魚卵出現、消失、視窗換位置時要重畫
+  parts.push(holiday() || '') // 節日開始、結束時換帽子
   if (foods.length) parts.push(Math.floor(now / 80)) // 食物偶爾會閃一下
   for (const b of bubbles) parts.push(q(b.x, 2), q(b.y, 2))
   if (isAnimating()) parts.push(Math.floor(now / 30)) // 冒汗、咀嚼、塵土、速度線這些跟著時間動
@@ -472,13 +482,15 @@ function step(dt) {
   updateBlink(dt)
   stepEggs(dt)
   stepRoe(dt)
-  if (feast) {
-    // 黑熊吃鮭魚的劇情：照劇本走，平常的動作先停
-    stepFeast(dt)
+  if (feast || (scene && scene.hold)) {
+    // 彩蛋的劇情（黑熊吃鮭魚、動物之間的互動）：照劇本走，平常的動作先停
+    if (feast) stepFeast(dt)
+    else stepScene(dt)
     updateLabel()
     updateSpeech()
     return
   }
+  if (scene) stepScene(dt) // 劇情的後半段：客人自己離開，吉祥物照常活動
   // actor.vx / spin / tumble 只有在工具列上爬的時候用；換了角色或模式就歸零，免得一直判定為「有在動」
   if (isFlyer() || isSwimmer() || crawlFree()) actor.vx = actor.spin = actor.tumble = 0
   if (isSwimmer()) stepSwim(dt, load)
@@ -534,7 +546,7 @@ function stepCrawl(dt, load) {
     actor.x += actor.vx * dt
     if (actor.x < cur.left + margin) { actor.x = cur.left + margin; actor.vx = Math.abs(actor.vx) * 0.5; actor.spin *= -0.6 }
     if (actor.x > cur.right - margin) { actor.x = cur.right - margin; actor.vx = -Math.abs(actor.vx) * 0.5; actor.spin *= -0.6 }
-    const maxLift = groundY() - cur.top - topH()
+    const maxLift = groundY() - Math.max(cur.top, 0) - topH()
     if (actor.lift > maxLift) { actor.lift = maxLift; actor.vy = Math.abs(actor.vy) * 0.3 }
     actor.tumble += actor.spin * dt
     actor.speed = 0
@@ -574,7 +586,7 @@ function stepCrawl(dt, load) {
     actor.phase += (Math.abs(dx) / (strideOf() * scale)) * Math.PI * 2
     return
   }
-  if (curled()) {
+  if (curled() || fainted()) {
     actor.speed = 0
     return
   }
@@ -1248,8 +1260,8 @@ function stepClimber(dt, e, path, onWindow) {
     const onWall = Math.abs(crawl.nx) > 0.5
     if (onWall && !egg.rollBounced) crawl.move *= -1
     egg.rollBounced = onWall
-  } else if (curled()) {
-    // 捲成球：原地不動，位置還是照常對齊（視窗被拖動時跟著走）
+  } else if (curled() || fainted()) {
+    // 捲成球、累倒：原地不動，位置還是照常對齊（視窗被拖動時跟著走）
     goal = null
     speed = actor.speed = 0
   } else if (egg.dizzy > 0 && goal === null) {
@@ -1401,7 +1413,7 @@ function stepCrawlFree(dt, load) {
     if (idleChance > 0 && Math.random() < idleChance * dt * 10) actor.pause = 0.6 + Math.random() * 2.2
     if (Math.random() < 0.08 * dt) crawl.move *= -1
   }
-  if (curled()) speed = actor.speed = 0
+  if (curled() || fainted()) speed = actor.speed = 0
   if (egg.dizzy > 0) {
     // 頭暈：爬得慢、一直搞錯方向
     speed = Math.min(speed, 40 * scale)
@@ -1663,6 +1675,23 @@ function stepFly(dt, load) {
     bird.tilt = approach(bird.tilt, 0, dt * 6)
     bird.look = approach(bird.look, 0, dt * 6)
     actor.phase += dt * 16
+    return
+  }
+
+  if (fainted()) {
+    // 累倒：飛在空中的直接掉下來，落地（或停著的地方）就躺著不動
+    bird.loop = -1
+    bird.hopY = 0
+    bird.spread = approach(bird.spread, 0, dt * 4)
+    if (bird.mode === 'fly') {
+      bird.vy += GRAVITY * 0.7 * dt
+      actor.x = clamp(actor.x + bird.vx * dt, cur.left + halfW(), cur.right - halfW())
+      actor.lift -= bird.vy * dt
+      if (actor.lift <= 0) landOn(groundPerch(), actor.x)
+    } else {
+      bird.act = 'idle'
+      actor.speed = 0
+    }
     return
   }
 
@@ -1944,7 +1973,7 @@ const LEAP_GRAVITY = 900 // 跳出水面時的重力（px/s²，乘上 scale）�
 function startLeap(e) {
   const s = config.scale
   // 數值氣泡也要有地方放
-  const room = groundY() - cur.top - topH() - LABEL_ROOM
+  const room = groundY() - Math.max(cur.top, 0) - topH() - LABEL_ROOM
   const h = Math.min(mascotDef().leap.height * s * (0.75 + 0.5 * e), room)
   if (h < 20 * s) return false
   turtle.mode = 'leap'
@@ -2012,6 +2041,21 @@ function stepSwim(dt, load) {
   // 從整個畫面切回工具列時，游在半空中的就往下掉
   if (!swimFree() && turtle.mode === 'swim') turtle.mode = 'fall'
 
+  if (fainted()) {
+    // 累倒：在畫面上游的掉回工具列的淺水裡，之後肚子朝上浮著不動（跳到一半、掉到一半的照常落水）
+    if (turtle.mode === 'swim') {
+      turtle.mode = 'fall'
+      actor.vy = 0
+      turtle.vx = 0
+    }
+    if (turtle.mode === 'water' || turtle.mode === 'land') {
+      actor.speed = 0
+      turtle.water = approach(turtle.water, turtle.mode === 'water' ? 1 : 0, dt * 1.6)
+      turtle.tilt = approach(turtle.tilt, 0, dt * 4)
+      return
+    }
+  }
+
   switch (turtle.mode) {
     case 'fall': {
       actor.vy += GRAVITY * dt
@@ -2020,7 +2064,7 @@ function stepSwim(dt, load) {
       actor.x += turtle.vx * dt
       if (actor.x < cur.left + m) { actor.x = cur.left + m; turtle.vx = Math.abs(turtle.vx) * 0.5 }
       if (actor.x > cur.right - m) { actor.x = cur.right - m; turtle.vx = -Math.abs(turtle.vx) * 0.5 }
-      const maxLift = groundY() - cur.top - topH()
+      const maxLift = groundY() - Math.max(cur.top, 0) - topH()
       if (actor.lift > maxLift) { actor.lift = maxLift; actor.vy = Math.abs(actor.vy) * 0.3 }
       if (Math.abs(turtle.vx) > 15) actor.dir = turtle.vx > 0 ? 1 : -1
       turtle.tilt = approach(turtle.tilt, 0, dt * 4)
@@ -2245,6 +2289,7 @@ function renderSwimmer(now, rx, ry) {
   ctx.save()
   ctx.translate(rx, ry)
   applyDizzySway(ctx, now)
+  applyFaint(ctx)
   def.draw(ctx, {
     scale: s,
     dir: actor.dir,
@@ -2253,18 +2298,20 @@ function renderSwimmer(now, rx, ry) {
     tilt: turtle.tilt,
     flinch: turtle.flinch,
     heat: clamp((load - 55) / 45, 0, 1),
-    blink: actor.blink,
-    shadow: turtle.water < 0.5 && actor.lift <= 0,
+    blink: Math.max(actor.blink, egg.faintK), // 累倒時閉著眼
+    shadow: turtle.water < 0.5 && actor.lift <= 0 && egg.faintK < 0.5,
+    hat: holiday(), // 節日的帽子（holiday.js）
     time: now,
   })
   ctx.restore()
   art.drawWaterFront(ctx, water)
   art.drawParticles(ctx, turtle.particles, s)
-  // 頭暈的星星在頭上，畫在水的前面
+  // 頭暈的星星在頭上、累倒冒的煙，畫在水的前面
   ctx.save()
   ctx.translate(rx, ry)
   drawDizzyStars(ctx, now)
   ctx.restore()
+  drawFaintSmoke(now)
 }
 
 /** 往 target 靠近，每秒最多 rate。 */
@@ -2300,6 +2347,7 @@ function updateBubbles(dt, load) {
 function render(now) {
   const load = clamp(metrics.load || 0, 0, 100)
   const scale = config.scale
+  const hat = holiday() // 節日（彩蛋）：戴什麼帽子、黑熊吃什麼點心
 
   let rx = actor.x
   let ry = feetY()
@@ -2333,6 +2381,23 @@ function render(now) {
     const x2 = Math.max(a, actor.x) + (WATER_WIDTH / 2 + 40) * scale
     boxes.push({ x: x1, y: groundY() - 220 * scale, w: x2 - x1, h: 228 * scale })
   }
+  if (scene) {
+    // 動物之間的互動：客人和吉祥物之間，高度跟著兩隻實際的位置走（琵鷺飛多高就清到多高，才不會留下殘影）
+    const g = toWX(scene.gsx)
+    const x1 = Math.min(g, actor.x) - 260 * scale
+    const x2 = Math.max(g, actor.x) + 260 * scale
+    const top = Math.min(groundY() - Math.max(0, scene.glift || 0) - 150 * scale, feetY() - topH() - 60 * scale)
+    boxes.push({ x: x1, y: top, w: x2 - x1, h: groundY() + 12 * scale - top })
+  }
+  if (egg.envelopes.length) {
+    // 春節跳出來的紅包
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+    for (const p of egg.envelopes) {
+      x1 = Math.min(x1, p.x); y1 = Math.min(y1, p.y); x2 = Math.max(x2, p.x); y2 = Math.max(y2, p.y)
+    }
+    const r = 16 * scale
+    boxes.push({ x: x1 - r, y: y1 - r, w: x2 - x1 + r * 2, h: y2 - y1 + r * 2 })
+  }
   if (isSwimmer() && turtle.water > 0.01) {
     // 淺水上岸後會留在原地慢慢退掉，可能已經不在烏龜身邊
     const w = WATER_WIDTH * scale
@@ -2356,12 +2421,14 @@ function render(now) {
   for (const p of foodSpots) {
     ctx.save()
     ctx.translate(p.x, p.y)
-    mascotDef().food(ctx, { scale, time: now })
+    mascotDef().food(ctx, { scale, time: now, holiday: hat })
     ctx.restore()
   }
-  drawLooseClaw(now)
+  drawLooseClaw()
   drawRoe(now)
   drawFeast(now)
+  drawScene(now)
+  drawEnvelopes()
 
   if (isSwimmer()) {
     renderSwimmer(now, rx, ry)
@@ -2369,12 +2436,19 @@ function render(now) {
   }
 
   ctx.save()
+  if (mascotUnderTaskbar()) {
+    // 螃蟹被琵鷺從工具列後面夾上來：只畫工具列上緣以上
+    ctx.beginPath()
+    ctx.rect(0, 0, viewW, groundY())
+    ctx.clip()
+  }
   ctx.translate(rx, ry)
 
   if (isFlyer()) {
     const flying = bird.mode === 'fly'
     const carried = !!(drag && drag.moved)
     applyDizzySway(ctx, now)
+    applyFaint(ctx)
     mascotDef().draw(ctx, {
       scale,
       phase: actor.phase,
@@ -2395,12 +2469,14 @@ function render(now) {
       dir: actor.dir,
       tailSwing: bird.tailSwing,
       heat: clamp((load - 55) / 45, 0, 1),
-      blink: actor.blink,
-      shadow: !flying && bird.hopY === 0,
+      blink: Math.max(actor.blink, egg.faintK), // 累倒時閉著眼
+      shadow: !flying && bird.hopY === 0 && egg.faintK < 0.5,
+      hat, // 節日的帽子（holiday.js）
       time: now,
     })
     drawDizzyStars(ctx, now)
     ctx.restore()
+    drawFaintSmoke(now)
     return
   }
 
@@ -2420,13 +2496,17 @@ function render(now) {
   if (bubbles.length && mascotDef().bubbles) drawBubbles(ctx, bubbles, scale)
 
   applyDizzySway(ctx, now)
-  const pose = bearPoseOverride || crawlPose()
+  applyFaint(ctx)
+  const pose = poseOverride || crawlPose()
   mascotDef().draw(ctx, {
     holding: feast && feast.phase === 'eat' ? 'salmon' : null, // 黑熊吃鮭魚（彩蛋）
+    hat, // 節日的帽子（holiday.js）
+    holiday: hat,
     scale,
     load,
     pose,
-    shadow: pose !== 'fall' && pose !== 'held', // 在空中、被抓著時沒有影子（不然會跟著身體一起翻）
+    // 在空中、被抓著、累倒時沒有影子（不然會跟著身體一起翻）
+    shadow: pose !== 'fall' && pose !== 'held' && egg.faintK < 0.5,
     curl: mascotDef().curl ? actor.ballK : undefined,
     wall: wallSide(),
     look: actor.look,
@@ -2435,7 +2515,7 @@ function render(now) {
     speed: actor.speed,
     dir: actor.dir,
     heat: clamp((load - 55) / 45, 0, 1),
-    blink: actor.blink,
+    blink: Math.max(actor.blink, egg.faintK), // 累倒時閉著眼
     time: now,
     // 甩掉的螯（彩蛋）：最後 CLAW_REGROW 秒慢慢長回來
     lostClaw: egg.clawGone > 0 ? egg.clawSide : 0,
@@ -2443,6 +2523,7 @@ function render(now) {
   })
   drawDizzyStars(ctx, now)
   ctx.restore()
+  drawFaintSmoke(now)
 }
 
 /**
@@ -2572,6 +2653,11 @@ const SHAKE_MIN = 24                 // 一下至少要甩多遠才算（px，�
 const CLAW_TIME = 12                 // 甩掉的螯多久之後長好
 const CLAW_REGROW = 3                // 最後幾秒慢慢長回來
 const REST_EVERY_MS = 60 * 60 * 1000 // 連續開多久提醒休息一次
+const FAINT_LOAD = 95                // 負載多高算「滿載」
+const FAINT_AFTER = 30               // 滿載撐多久會累倒（秒）
+const FAINT_RECOVER_LOAD = 80        // 負載降到多少以下才爬得起來
+const FAINT_RECOVER_AFTER = 3        // 降下來之後再等幾秒
+const FAINT_MIN = 6                  // 至少躺幾秒
 const SPEECH_TIME = 9                // 提醒的對話框顯示幾秒
 
 const egg = {
@@ -2589,6 +2675,14 @@ const egg = {
   rests: 0,            // 已經提醒過幾次休息
   speechT: 0,          // 對話框還要顯示多久
   speechText: '',
+  hotT: 0,             // 負載 95% 以上已經連續多久
+  coolT: 0,            // 累倒之後負載降到 80% 以下已經多久
+  fainted: false,      // 累倒了
+  faintK: 0,           // 倒下去倒到幾成（0 站著 … 1 整個倒下），倒下、爬起來時慢慢變
+  faintMin: 0,         // 至少還要躺多久
+  holidayPreview: null, // 測試按鈕強制預覽的節日（'off' 是強制沒有節日）
+  greeted: null,       // 已經說過「節日快樂」的節日（節日開始時說一次）
+  envelopes: [],       // 春節點吉祥物跳出來的紅包：{ x, y, vx, vy, angle, spin, life }
 }
 const speech = document.getElementById('speech')
 const speechState = { visible: null, text: null, transform: null, width: 160 }
@@ -2702,7 +2796,133 @@ function remindRest(hours) {
   }
 }
 
+// ---- 台灣節日（holiday.js）：春節、端午、中秋自動戴帽子，黑熊的食物換成節日點心，春節點一下會跳出紅包
+
+const HOLIDAY_PREVIEW = ['midautumn', 'dragonboat', 'newyear', 'off'] // 測試按鈕輪流預覽的順序
+let holidayCache = { at: -Infinity, kind: null }
+
+/** 今天是什麼節日（每分鐘重新算一次；測試按鈕可以強制預覽）。 */
+function holiday() {
+  if (egg.holidayPreview) return egg.holidayPreview === 'off' ? null : egg.holidayPreview
+  const now = performance.now()
+  if (now - holidayCache.at > 60000) {
+    holidayCache = { at: now, kind: window.HolidayArt ? window.HolidayArt.holidayOf(new Date()) : null }
+  }
+  return holidayCache.kind
+}
+
+/** 春節點吉祥物：跳出一個紅包，轉著飛起來再掉下去。 */
+function popEnvelope(x, y) {
+  const s = config.scale
+  if (egg.envelopes.length > 12) egg.envelopes.shift()
+  // 噴高一點、往兩旁散開，才不會躲在頭上的數值標籤和對話框後面
+  egg.envelopes.push({ x, y, vx: rand(-180, 180) * s, vy: -rand(500, 660) * s, angle: 0, spin: rand(-6, 6), life: 1.8 })
+}
+
+function stepEnvelopes(dt) {
+  for (let i = egg.envelopes.length - 1; i >= 0; i--) {
+    const p = egg.envelopes[i]
+    p.vy += 900 * config.scale * dt
+    p.x += p.vx * dt
+    p.y += p.vy * dt
+    p.angle += p.spin * dt
+    p.life -= dt
+    if (p.life <= 0) egg.envelopes.splice(i, 1)
+  }
+}
+
+function drawEnvelopes() {
+  if (!egg.envelopes.length || !window.HolidayArt) return
+  for (const p of egg.envelopes) {
+    ctx.save()
+    ctx.globalAlpha = Math.min(1, p.life * 2)
+    ctx.translate(p.x, p.y)
+    window.HolidayArt.drawEnvelope(ctx, config.scale, p.angle)
+    ctx.restore()
+  }
+}
+
+/** 被滿載操到累倒：在牆上、天花板上的先掉下來，之後原地倒下（stepEggs 管什麼時候爬起來）。 */
+function faintNow() {
+  egg.fainted = true
+  egg.faintMin = FAINT_MIN
+  egg.coolT = 0
+  egg.dizzy = 0
+  egg.rollT = 0
+  actor.curl = 0
+  if (crawlFree() && crawl.mode === 'walk' && (Math.abs(crawl.nx) > 0.7 || crawl.ny > 0.5)) crawlFall(crawl.nx * 60, 0)
+}
+
+/** 累倒了（倒下、躺著、正在爬起來都算）：不走動。 */
+function fainted() {
+  return egg.fainted || egg.faintK > 0.01
+}
+
+/** 倒下去的角度：往後倒、側躺；螃蟹和穿山甲翻成肚子朝天，游泳類肚子朝上浮著。 */
+function faintAngle() {
+  const k = egg.faintK
+  if (k <= 0) return 0
+  if (isSwimmer() || mascotDef().faintFlip) return Math.PI * k
+  return -actor.dir * (Math.PI / 2) * k
+}
+
+/** 倒下的樣子：繞著身體中心轉；原點是腳底，跟畫吉祥物時一樣。 */
+function applyFaint(c) {
+  const a = faintAngle()
+  if (!a) return
+  // 側躺的話，身體的厚度比站著的高度矮：中心要跟著往下移，才會貼著地面躺，不會浮在半空中
+  if (!isSwimmer() && !mascotDef().faintFlip) c.translate(0, Math.max(0, topH() * 0.5 - halfW() * 0.65) * egg.faintK)
+  c.translate(0, -topH() * 0.5)
+  c.rotate(a)
+  c.translate(0, topH() * 0.5)
+}
+
+/** 累倒時頭上冒的煙（視窗座標，從身體中心往上飄）。 */
+function drawFaintSmoke(now) {
+  const k = egg.faintK
+  if (k <= 0.05) return
+  const s = config.scale
+  const c = crawlFree() ? crawlCenter() : { x: actor.x, y: feetY() - topH() * 0.5 }
+  ctx.save()
+  for (let i = 0; i < 3; i++) {
+    const t = (now * 0.0006 + i / 3) % 1
+    ctx.globalAlpha = (1 - t) * 0.55 * k
+    ctx.fillStyle = '#a3a6ad'
+    ctx.beginPath()
+    ctx.arc(c.x + Math.sin(t * 6 + i * 2) * 7 * s, c.y - topH() * 0.25 - t * 46 * s, (4 + t * 9) * s, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.restore()
+}
+
 function stepEggs(dt) {
+  // 節日開始的時候說一次「節日快樂」
+  const kind = holiday()
+  if (kind !== egg.greeted) {
+    egg.greeted = kind
+    if (kind && window.HolidayArt) {
+      egg.speechText = window.HolidayArt.greeting(kind)
+      egg.speechT = SPEECH_TIME
+    }
+  }
+  stepEnvelopes(dt)
+
+  // 滿載撐太久會累倒，負載降下來一陣子才爬起來（爬起來之後頭暈一下）
+  const load = clamp(metrics.load || 0, 0, 100)
+  egg.hotT = load >= FAINT_LOAD ? egg.hotT + dt : 0
+  if (!egg.fainted && egg.hotT >= FAINT_AFTER) faintNow()
+  if (egg.fainted) {
+    egg.faintMin -= dt
+    egg.coolT = load < FAINT_RECOVER_LOAD ? egg.coolT + dt : 0
+    if (egg.faintMin <= 0 && egg.coolT >= FAINT_RECOVER_AFTER) {
+      egg.fainted = false
+      egg.hotT = 0
+    }
+  }
+  const wasDown = egg.faintK > 0
+  egg.faintK = approach(egg.faintK, egg.fainted ? 1 : 0, dt / (egg.fainted ? 0.5 : 0.9))
+  if (wasDown && egg.faintK === 0) startDizzy(2)
+
   if (egg.dizzy > 0) egg.dizzy = Math.max(0, egg.dizzy - dt)
   if (egg.rollT > 0) {
     egg.rollT -= dt
@@ -2735,7 +2955,7 @@ function stepEggs(dt) {
 
 /** 有彩蛋正在進行（要一直重畫）。 */
 function eggAnimating() {
-  return egg.dizzy > 0 || egg.rollT > 0 || !!egg.claw || egg.clawGone > 0
+  return egg.dizzy > 0 || egg.rollT > 0 || !!egg.claw || egg.clawGone > 0 || egg.faintK > 0 || egg.envelopes.length > 0
 }
 
 /** 頭暈時身體左右歪（弧度），最後一小段慢慢停下來。 */
@@ -2787,7 +3007,7 @@ function drawDizzyStars(c, now) {
 }
 
 /** 甩掉的那隻螯（飛出去、掉在地上，最後一秒淡掉）。 */
-function drawLooseClaw(now) {
+function drawLooseClaw() {
   const c = egg.claw
   if (!c || !window.CrabArt.drawLooseClaw) return
   const load = clamp(metrics.load || 0, 0, 100)
@@ -2873,10 +3093,10 @@ function startFeast(fishSX) {
     phase: 'enter', t: 0, side, target: clamp(stopAt(side), cur.left + m, cur.right - m),
     poolSX: fishSX, fishSX, fishLift: 0, fishVX: 0, fishVY: 0, fishTilt: 0, fishPhase: 0, fishDir: side, water: 1,
   }
-  bearPoseOverride = 'run'
+  poseOverride = 'run'
 }
 
-let bearPoseOverride = null // 劇情進行中黑熊的姿勢
+let poseOverride = null // 劇情進行中爬行類（黑熊、螃蟹）的姿勢
 
 function stepFeast(dt) {
   const f = feast
@@ -2900,7 +3120,7 @@ function stepFeast(dt) {
       actor.speed = 0
       f.phase = 'notice'
       f.t = 0
-      bearPoseOverride = 'walk'
+      poseOverride = 'walk'
       splash(fishX, groundY() - FEAST_FISH_DEPTH * s, 8, 0.8)
     }
   } else if (f.phase === 'notice') {
@@ -2935,7 +3155,7 @@ function stepFeast(dt) {
       // 接住了：坐下來抱著啃
       f.phase = 'eat'
       f.t = 0
-      bearPoseOverride = 'eat'
+      poseOverride = 'eat'
     }
   } else if (f.phase === 'eat') {
     f.water = Math.max(0, f.water - dt * 1.2)
@@ -2952,7 +3172,7 @@ function endFeast() {
     window.crabAPI.salmonEggAt(feast.fishSX)
   }
   feast = null
-  bearPoseOverride = null
+  poseOverride = null
   actor.speed = 0
   actor.pause = 1
   if (crawlFree()) crawlFall(0, 0) // 整個畫面模式：從工具列上接回原本的爬行
@@ -3038,6 +3258,270 @@ function drawFeast(now) {
   ART.turtle.drawParticles(ctx, turtle.particles, s)
 }
 
+// ---------------------------------------------------------------- 彩蛋：動物之間的互動
+
+/**
+ * 換角色的時候，換走的那隻（客人）還在畫面上，跟換上來的那隻演一小段：
+ *   'scoop'   黑面琵鷺 → 螃蟹：螃蟹躲在工具列底下，琵鷺站在工具列上低頭用湯匙嘴掃，把螃蟹從工具列後面夾上來，
+ *             往上飛；螃蟹在空中狂夾，琵鷺嚇一跳（頭上冒「！」）把牠丟下來、自己飛走，螃蟹摔得頭暈
+ *   'friends' 綠蠵龜 → 台灣白海豚：白海豚游過來，兩隻並排游一段（白海豚噴兩次水），
+ *             之後綠蠵龜往另一邊游走，白海豚說掰掰
+ * 客人的位置用螢幕座標記（gsx）。scene.hold 是 true 的時候吉祥物照劇本走、不能拖曳；
+ * 琵鷺丟下螃蟹、綠蠵龜游走的時候放手讓吉祥物照常活動，客人自己離開畫面就結束。
+ */
+const SCOOP_REACH = 54       // 琵鷺夾著螃蟹的螯，兩隻的中心差多遠（螃蟹比琵鷺大，吊在正下方會把琵鷺擋住）
+const SCOOP_LOOK_T = 1.0     // 琵鷺低頭往工具列邊緣掃多久
+const SCOOP_PULL_T = 0.9     // 把螃蟹從工具列後面夾上來要多久
+const SCOOP_LIFT_T = 1.4     // 夾著螃蟹往上飛多久
+const SCOOP_PINCH_T = 0.8    // 螃蟹狂夾多久琵鷺才放開
+const SCOOP_LEAVE = 340      // 琵鷺嚇跑飛走的速度
+const FRIENDS_SWIM = 240     // 白海豚游過來的速度
+const FRIENDS_GAP = 150      // 兩隻並排游的距離
+const FRIENDS_TOGETHER_T = 5 // 一起游多久
+const FRIENDS_POOL = 190     // 綠蠵龜那片淺水比較窄，兩片水才不會疊太多
+
+let scene = null
+
+/** 換上來的那隻從比較近的那一側進場，停在客人旁邊 gap 的地方；那一側站不下就換另一側。 */
+function sceneEntry(gx, gap) {
+  const s = config.scale
+  const m = halfW() + 6
+  let side = gx < (cur.left + cur.right) / 2 ? -1 : 1
+  const stop = (sd) => gx + sd * gap * s
+  if (stop(side) < cur.left + m || stop(side) > cur.right - m) side = -side
+  actor.x = side < 0 ? cur.left - halfW() : cur.right + halfW()
+  actor.lift = 0
+  actor.vy = actor.vx = actor.spin = actor.tumble = 0
+  actor.dir = -side
+  return { side, target: clamp(stop(side), cur.left + m, cur.right - m) }
+}
+
+function startScoop(guestSX) {
+  // 琵鷺還站在原地（工具列上）；螃蟹躲在牠旁邊（畫面比較寬的那一側）的工具列底下
+  const s = config.scale
+  const gx = toWX(guestSX)
+  const m = halfW() + 6
+  let side = gx < (cur.left + cur.right) / 2 ? 1 : -1
+  if (gx + side * SCOOP_REACH * s > cur.right - m || gx + side * SCOOP_REACH * s < cur.left + m) side = -side
+  actor.x = gx + side * SCOOP_REACH * s
+  actor.lift = -(topH() + 8 * s) // 整隻在工具列上緣底下（畫的時候會裁掉）
+  actor.vy = actor.vx = actor.spin = actor.tumble = 0
+  actor.dir = -side
+  actor.speed = 0
+  crawl.mode = 'walk'
+  crawl.nx = 0
+  crawl.ny = -1
+  crawl.angle = 0
+  scene = {
+    type: 'scoop', hold: true, phase: 'look', t: 0, side,
+    gsx: guestSX, glift: 0, gflap: 0, gpeck: 0, gspread: 0,
+  }
+}
+
+/** 螃蟹還有一部分在工具列底下（被琵鷺從工具列後面夾上來的時候），畫的時候要裁掉工具列上緣以下。 */
+function mascotUnderTaskbar() {
+  return !!scene && scene.type === 'scoop' && actor.lift < 0
+}
+
+function startFriends(guestSX) {
+  const { side, target } = sceneEntry(toWX(guestSX), FRIENDS_GAP)
+  turtle.mode = 'water'
+  turtle.water = 1
+  turtle.waterX = actor.x
+  turtle.tilt = 0
+  scene = {
+    type: 'friends', hold: true, phase: 'enter', t: 0, side, target,
+    gsx: guestSX, gdir: side, gphase: 0, gwater: 1, tdir: 1, spouts: 0,
+  }
+}
+
+/** 中途換了角色：客人直接消失，吉祥物照常活動。 */
+function endScene() {
+  scene = null
+  poseOverride = null
+}
+
+function stepScene(dt) {
+  if (scene.type === 'scoop') stepScoop(dt)
+  else stepFriends(dt)
+}
+
+/** 走（或游）到 target，回傳到了沒。 */
+function moveTo(target, speed, dt) {
+  const dx = target - actor.x
+  const step = Math.min(Math.abs(dx), speed * dt)
+  actor.x += Math.sign(dx) * step
+  if (dx) actor.dir = Math.sign(dx)
+  actor.speed = speed
+  return { arrived: Math.abs(target - actor.x) < 0.5, step }
+}
+
+function stepScoop(dt) {
+  const c = scene
+  const s = config.scale
+  c.t += dt
+  const gx = toWX(c.gsx)
+  const flying = c.phase === 'lift' || c.phase === 'pinch' || c.phase === 'leave'
+  c.gflap += dt * Math.PI * 2 * (c.phase === 'pinch' ? 9 : flying ? 4.5 : 0)
+  // 換角色時視窗的位置可能剛換過：螃蟹一直對齊在琵鷺旁邊（琵鷺用螢幕座標記，不會跟著跑掉）
+  if (c.phase !== 'leave') actor.x = gx + c.side * SCOOP_REACH * s
+  if (c.phase === 'look') {
+    // 低頭用湯匙嘴往工具列邊緣左右掃（畫法裡 peck 大的時候會自己掃）
+    c.gpeck = approach(c.gpeck, 1, dt * 2.5)
+    if (c.t >= SCOOP_LOOK_T) {
+      c.phase = 'pull'
+      c.t = 0
+    }
+  } else if (c.phase === 'pull') {
+    // 把螃蟹從工具列後面夾上來：螯和眼睛先冒出來，腳亂踢
+    const u = Math.min(1, c.t / SCOOP_PULL_T)
+    actor.lift = -(topH() + 8 * s) * (1 - u * (2 - u)) // 先快後慢
+    actor.phase += dt * 20
+    actor.speed = 200 * s
+    c.gpeck = approach(c.gpeck, 0.6, dt * 1.5)
+    if (c.t >= SCOOP_PULL_T) {
+      actor.lift = 0
+      c.phase = 'lift'
+      c.t = 0
+    }
+  } else if (c.phase === 'lift' || c.phase === 'pinch') {
+    // 夾著螃蟹往上飛（只在工具列上時視窗只有底下一條，cur.top 是整台螢幕的頂端，高度要用視窗的頂端算）
+    const top = Math.min(150 * s, groundY() - Math.max(cur.top, 0) - topH() - 120 * s)
+    c.glift = approach(c.glift, Math.max(40 * s, top), dt * 140 * s)
+    c.gspread = approach(c.gspread, 1, dt * 4)
+    actor.x = gx + c.side * SCOOP_REACH * s
+    actor.lift = Math.max(0, c.glift - 24 * s)
+    const swing = c.side * 0.3 + Math.sin(c.t * 7) * (c.phase === 'pinch' ? 0.25 : 0.12)
+    actor.tumble = swing
+    crawl.angle = swing // 整個畫面模式是用 crawl.angle 轉
+    actor.phase += dt * (c.phase === 'pinch' ? 30 : 16)
+    actor.speed = 200 * s
+    if (c.phase === 'lift' && c.t >= SCOOP_LIFT_T) {
+      c.phase = 'pinch' // 螃蟹狂夾
+      c.t = 0
+    } else if (c.phase === 'pinch' && c.t >= SCOOP_PINCH_T) {
+      // 琵鷺嚇一跳把螃蟹丟下來：螃蟹照平常的物理掉下去、摔得頭暈，琵鷺往另一邊飛走
+      c.phase = 'leave'
+      c.t = 0
+      c.hold = false
+      actor.vy = 0
+      actor.vx = 0
+      actor.speed = 0
+      if (crawlFree()) {
+        crawl.mode = 'held'
+        crawlFall(0, 0)
+      }
+      startDizzy(3.5)
+    }
+  } else if (c.phase === 'leave') {
+    c.gsx += -c.side * SCOOP_LEAVE * s * dt
+    c.glift = Math.min(groundY() - Math.max(cur.top, 0) - 110 * s, c.glift + 80 * s * dt)
+    c.gpeck = approach(c.gpeck, 0, dt * 2)
+    if (gx < cur.left - 120 * s || gx > cur.right + 120 * s) endScene()
+  }
+}
+
+function stepFriends(dt) {
+  const c = scene
+  const s = config.scale
+  c.t += dt
+  c.gphase += dt * 5
+  bird.time += dt
+  stepParticles(dt)
+  if (c.hold) {
+    // 白海豚照劇本游，淺水跟著牠
+    turtle.mode = 'water'
+    turtle.water = approach(turtle.water, 1, dt * 1.6)
+    turtle.waterX = actor.x
+    actor.phase += dt * 5
+  }
+  const gx = toWX(c.gsx)
+  const m = halfW() + 6
+  if (c.phase === 'enter') {
+    if (moveTo(c.target, FRIENDS_SWIM * s, dt).arrived) {
+      // 到了：往畫面比較寬的那一邊一起游
+      c.phase = 'together'
+      c.t = 0
+      c.tdir = gx < (cur.left + cur.right) / 2 ? 1 : -1
+    }
+  } else if (c.phase === 'together') {
+    const v = 90 * s * c.tdir * dt
+    actor.x += v
+    c.gsx += v
+    actor.dir = c.gdir = c.tdir
+    actor.speed = 90 * s
+    if (Math.min(actor.x, gx) < cur.left + m || Math.max(actor.x, gx) > cur.right - m) c.tdir = -c.tdir
+    // 白海豚開心地噴兩次水
+    const spout = mascotDef().spout
+    if (spout && c.spouts < 2 && c.t > 1.5 + c.spouts * 2) {
+      c.spouts++
+      const bx = actor.x + actor.dir * spout.x * s
+      const by = feetY() + spout.y * s
+      for (let i = 0; i < 9; i++) addParticle({ kind: 'drop', x: bx, y: by, vx: rand(-40, 40) * s, vy: -rand(180, 280) * s, r: rand(1.2, 2.2) * s, life: 1 })
+    }
+    if (c.t >= FRIENDS_TOGETHER_T) {
+      // 綠蠵龜往比較近的那一邊游走，白海豚說掰掰之後照常活動
+      c.phase = 'bye'
+      c.t = 0
+      c.hold = false
+      c.gdir = gx < (cur.left + cur.right) / 2 ? -1 : 1
+      actor.dir = -c.gdir
+      actor.speed = 0
+      turtle.timer = rand(6, 12)
+      egg.speechText = '掰掰，綠蠵龜！'
+      egg.speechT = SPEECH_TIME
+    }
+  } else if (c.phase === 'bye') {
+    c.gsx += c.gdir * 150 * s * dt
+    if (gx < cur.left - FRIENDS_POOL * s || gx > cur.right + FRIENDS_POOL * s) endScene()
+  }
+}
+
+/** 客人（換走的那隻）：琵鷺畫在螃蟹後面，螃蟹才像被叼在嘴前；綠蠵龜帶著自己那一小片淺水。 */
+function drawScene(now) {
+  const c = scene
+  if (!c) return
+  const s = config.scale
+  const gx = toWX(c.gsx)
+  if (c.type === 'scoop') {
+    ctx.save()
+    ctx.translate(gx, groundY() - c.glift)
+    ART.spoonbill.draw(ctx, {
+      scale: s, dir: c.phase === 'leave' ? -c.side : c.side, flap: c.gflap, spread: c.gspread, peck: c.gpeck,
+      look: c.phase === 'leave' ? -c.side * 0.8 : c.side * 0.8, // 轉頭看著螃蟹，夾著的時候嘴往螃蟹那邊歪
+      legs: c.glift > 2 ? 'tuck' : 'stand', shadow: c.glift <= 2, blink: 0, time: now, hat: holiday(),
+    })
+    if (c.phase === 'pinch') {
+      // 嚇一跳：頭上冒一個「！」
+      ctx.translate(0, -104 * s)
+      ctx.beginPath()
+      ctx.arc(0, 0, 9 * s, 0, Math.PI * 2)
+      ctx.fillStyle = '#ffd84a'
+      ctx.fill()
+      ctx.lineWidth = 1.2 * s
+      ctx.strokeStyle = '#b98510'
+      ctx.stroke()
+      ctx.fillStyle = '#5a3a00'
+      ctx.font = `bold ${Math.round(13 * s)}px sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('！', 0, 1 * s)
+    }
+    ctx.restore()
+  } else {
+    const water = {
+      x: gx, width: FRIENDS_POOL * s, surfaceY: groundY() - WATER_DEPTH * s, groundY: groundY(),
+      amount: c.gwater, time: now, scale: s,
+    }
+    ART.turtle.drawWaterBack(ctx, water)
+    ctx.save()
+    ctx.translate(gx, groundY())
+    ART.turtle.draw(ctx, { scale: s, dir: c.gdir, phase: c.gphase, pose: 'swim', blink: 0, shadow: false, time: now, hat: holiday() })
+    ctx.restore()
+    ART.turtle.drawWaterFront(ctx, water)
+  }
+}
+
 // ---------------------------------------------------------------- 滑鼠
 
 // 視窗預設整片穿透（工具列和其他視窗才點得到），只有游標壓在吉祥物身上時才短暫接管。
@@ -3075,7 +3559,7 @@ function nearEdge(px, py) {
 
 window.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || !overMascot(e.clientX, e.clientY)) return
-  if (feast) return // 黑熊吃鮭魚的劇情中不能抓
+  if (feast || (scene && scene.hold)) return // 彩蛋的劇情中不能抓
   drag = {
     startX: e.clientX,
     startY: e.clientY,
@@ -3231,7 +3715,12 @@ window.addEventListener('click', (e) => {
     return
   }
   if (!overMascot(e.clientX, e.clientY)) return
-  if (feast) return // 黑熊吃鮭魚的劇情中不理會點擊
+  if (feast || (scene && scene.hold)) return // 彩蛋的劇情中不理會點擊
+  if (holiday() === 'newyear') popEnvelope(e.clientX, e.clientY) // 春節：點一下跳出紅包
+  if (fainted()) {
+    pinned = !pinned // 累倒了戳也不會跑，只切換數值標籤
+    return
+  }
   // 連點的話取消雙擊排好的「打開設定」，不然點一點設定視窗就跳出來了
   if (settingsTimer) {
     clearTimeout(settingsTimer)
@@ -3303,15 +3792,34 @@ document.addEventListener('mouseleave', () => {
 
 // 主程序定期讀到的游標位置（離開視窗範圍時是 null）：前景是系統管理員權限的視窗時收不到 mousemove，
 // 靠這個發現游標移到吉祥物上、也靠這個發現游標離開
+let pollOnly = 0 // 連續收到幾次「游標在動」卻沒有真的滑鼠事件
 window.crabAPI.onCursor((pos) => {
   if (drag) return
+  const now = performance.now()
+  // 游標在視窗裡一直動、卻好一陣子沒收到真的滑鼠事件：滑鼠鉤子大概被 Windows 拿掉了（例如睡眠恢復後），
+  // 請主程序重新接好（系統管理員權限的視窗在前景時也會這樣，重新接一次無害，主程序會限制頻率）
+  if (pos && !hovering && now - lastRealMove > 1500) {
+    if (++pollOnly >= 8) {
+      pollOnly = 0
+      window.crabAPI.refreshMouse()
+    }
+  } else {
+    pollOnly = 0
+  }
   // 最近有收到真的滑鼠事件就不用它：主程序讀的位置可能比較舊，剛移到吉祥物身上就停住按下去時，
   // 舊位置會把穿透打開，那一下就按到後面去了（有時候拖不動）。收不到滑鼠事件時才靠它
-  if (performance.now() - lastRealMove < 400) return
+  if (now - lastRealMove < 400) return
   lastMouse = pos
   setHover(!!pos && overMascot(pos.x, pos.y))
 })
 
+// 主程序重新接好滑鼠（睡眠恢復之後）：視窗已經改回穿透，這邊的接管狀態跟著重設
+window.crabAPI.onMouseReset(() => {
+  hovering = false
+  document.body.classList.remove('hot')
+  drag = null
+  lastMouse = null
+})
 window.crabAPI.onMetrics((data) => { metrics = data })
 // 設定視窗的測試按鈕（開發時才有）：直接觸發彩蛋
 window.crabAPI.onEgg((name) => {
@@ -3320,6 +3828,16 @@ window.crabAPI.onEgg((name) => {
     egg.shake.dir = Math.random() < 0.5 ? -1 : 1
     shakeOff()
   } else if (name === 'rest') remindRest(Math.max(1, egg.rests))
+  else if (name === 'faint') faintNow() // 負載沒有真的高，躺滿 FAINT_MIN 秒就會爬起來
+  else if (name === 'holiday') {
+    // 輪流預覽節日：中秋 → 端午 → 春節 → 關閉（強制沒有節日）→ 回到依日期自動
+    const i = HOLIDAY_PREVIEW.indexOf(egg.holidayPreview)
+    egg.holidayPreview = i + 1 < HOLIDAY_PREVIEW.length ? HOLIDAY_PREVIEW[i + 1] : null
+    egg.greeted = undefined // 換了就再說一次節日快樂
+    const label = { midautumn: '中秋', dragonboat: '端午', newyear: '春節', off: '關閉' }[egg.holidayPreview] || '依日期自動'
+    egg.speechText = `節日預覽：${label}`
+    egg.speechT = 3
+  }
 })
 window.crabAPI.onConfig((data) => {
   const wasFlyer = isFlyer()
@@ -3351,6 +3869,12 @@ window.crabAPI.onConfig((data) => {
   // 彩蛋：正在用鮭魚的時候換成黑熊（主程序記下了魚卵）→ 黑熊吃鮭魚；劇情中換成別的就直接結束
   if (wasMascot === 'salmon' && config.mascot === 'bear' && config.salmonEgg && !feast) startFeast(fishSX)
   else if (feast && config.mascot !== 'bear') endFeast()
+  // 彩蛋：動物之間的互動（換走的那隻還在原地，跟換上來的那隻演一段）
+  if (config.mascot !== wasMascot) {
+    if (scene) endScene()
+    if (wasMascot === 'spoonbill' && config.mascot === 'crab' && !feast) startScoop(fishSX)
+    else if (wasMascot === 'turtle' && config.mascot === 'dolphin' && !feast) startFriends(fishSX)
+  }
   syncRoe()
   resize()
 })

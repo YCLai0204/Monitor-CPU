@@ -56,6 +56,7 @@ function drawPangolin(ctx, opts) {
     detail = 'high',
     shadow = true,
     time = 0,
+    hat = null,      // 節日的帽子（holiday.js）
   } = opts
 
   const low = detail === 'low'
@@ -92,14 +93,14 @@ function drawPangolin(ctx, opts) {
     ctx.translate(wall * WALL_X, -BODY_MID)
     ctx.rotate((-wall * Math.PI) / 2)
     ctx.scale((wall < 0) !== down ? -1 : 1, 1)
-    drawSide(ctx, { pose, phase, speed, heat, blink, low, time })
+    drawSide(ctx, { pose, phase, speed, heat, blink, low, time, hat })
     ctx.restore()
     return
   }
 
   if (shadow && pose !== 'climb') drawShadow(ctx, 30)
   ctx.scale(dir < 0 ? -1 : 1, 1)
-  drawSide(ctx, { pose, phase, speed, heat, blink, low, time })
+  drawSide(ctx, { pose, phase, speed, heat, blink, low, time, hat })
   if (heat > 0.35 && !low && pose !== 'icon') drawSweat(ctx, heat, time)
   ctx.restore()
 }
@@ -117,7 +118,7 @@ function drawShadow(ctx, rx) {
 // ---------------------------------------------------------------- 側面（走路、扒牆、趴著、吃東西）
 
 /** 側面的整隻穿山甲，面向右邊。tuck（0..1）是腳收進肚子底下收到幾成（捲成球的第一步）。 */
-function drawSide(ctx, { pose, phase, speed, heat, blink, low, time, tuck = 0 }) {
+function drawSide(ctx, { pose, phase, speed, heat, blink, low, time, tuck = 0, hat = null }) {
   const walking = pose === 'walk' || pose === 'climb'
   const resting = pose === 'sit'
   const eating = pose === 'eat'
@@ -138,6 +139,17 @@ function drawSide(ctx, { pose, phase, speed, heat, blink, low, time, tuck = 0 })
   ctx.translate(0, bob + (resting ? 5 : 0))
   drawHead(ctx, { blink: resting ? Math.max(blink, 0.55) : blink, heat, low, eating, time })
   drawBody(ctx, low)
+  if (hat && window.HolidayArt) {
+    // 節日的帽子：頭先畫、被身體蓋住一截，帽子要等身體畫完再戴上去；低頭吃東西時跟著低頭
+    ctx.save()
+    if (eating) {
+      ctx.translate(NECK.x, NECK.y)
+      ctx.rotate(EAT_TILT)
+      ctx.translate(-NECK.x, -NECK.y)
+    }
+    window.HolidayArt.drawHat(ctx, hat, 33, -30, 15, 0.3)
+    ctx.restore()
+  }
   ctx.restore()
 
   if (resting) {

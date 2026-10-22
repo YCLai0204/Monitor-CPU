@@ -48,6 +48,7 @@ function drawCrab(ctx, opts) {
     shadow = true,
     lostClaw = 0,    // 被甩掉的那隻螯（-1 左、1 右、0 都在）
     regrow = 0,      // 掉的那隻長回來長到幾成（0..1），螃蟹的螯真的會再生
+    hat = null,      // 節日的帽子（holiday.js），戴在殼頂、兩根眼柄中間
   } = opts
 
   const st = { still: pose === 'icon', low: detail === 'low' }
@@ -76,6 +77,7 @@ function drawCrab(ctx, opts) {
   drawClaw(ctx, 1, phase, speed, col, st, lostClaw === 1 ? regrow : 1)
   drawBody(ctx, col, st)
   ctx.shadowBlur = 0
+  if (hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, hat, 0, -40, 30)
   drawEyes(ctx, look, blink, phase, col, st)
 
   ctx.restore()

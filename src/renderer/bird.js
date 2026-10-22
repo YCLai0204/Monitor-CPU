@@ -119,6 +119,7 @@ function drawBird(ctx, opts) {
     heat,
     low,
     lw,
+    hat: opts.hat, // 節日的帽子（holiday.js）
   })
   if (heat > 0.35 && !low && !icon) drawSweat(ctx, heat, time)
 
@@ -459,6 +460,8 @@ function drawHead(ctx, o) {
   }
   ctx.restore()
 
+  // 節日的帽子：戴在頭頂，跟著轉頭稍微偏
+  if (o.hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, o.hat, fx * 0.4, cy - r + 4, 26)
   ctx.restore()
 }
 

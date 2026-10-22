@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, shell, dialog, nativeImage } = require('electron')
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, shell, dialog, nativeImage, powerMonitor } = require('electron')
 const { execFile } = require('child_process')
 const fs = require('fs')
 const os = require('os')
@@ -574,6 +574,26 @@ function applyLoginItem() {
 
 // ---------------------------------------------------------------- 顯示開關
 
+/**
+ * 重新接好滑鼠。穿透中的視窗靠 Electron 的全域滑鼠鉤子知道游標移上來，但鉤子只要有一次太久沒回應
+ * （例如剛從睡眠恢復、整台電腦都很忙），Windows 就會默默把它拿掉，之後怎麼點都沒反應，要重開程式才好。
+ * 先關掉轉送再打開，Electron 會重新裝一次鉤子；順便把視窗重新頂到最上層（恢復時工具列之類的可能蓋上來），
+ * 接管狀態也重設成穿透。
+ */
+let lastMouseRefresh = 0
+function refreshMouse() {
+  if (!win || win.isDestroyed()) return
+  lastMouseRefresh = Date.now()
+  interactive = false
+  win.setIgnoreMouseEvents(true)
+  win.setIgnoreMouseEvents(true, { forward: true })
+  if (win.isVisible()) {
+    win.setAlwaysOnTop(false)
+    win.setAlwaysOnTop(true, 'screen-saver')
+  }
+  win.webContents.send('mouse-reset')
+}
+
 function setInteractive(next) {
   if (!win || win.isDestroyed() || next === interactive) return
   interactive = next
@@ -843,6 +863,10 @@ if (!app.requestSingleInstanceLock()) {
       if (win && !win.isDestroyed() && win.isVisible() && !interactive) win.setAlwaysOnTop(true, 'screen-saver')
     }, 10000)
     startCursorPoll()
+    // 從睡眠恢復、解除鎖定之後：滑鼠鉤子可能被拿掉、視窗可能被蓋到下面，等系統穩定一點再重新接好
+    for (const event of ['resume', 'unlock-screen']) {
+      powerMonitor.on(event, () => setTimeout(refreshMouse, 2000))
+    }
   })
 
   // 註冊這個監聽器（即使什麼都不做）就會取消 Electron 的自動結束，讓程式常駐在背景
@@ -853,6 +877,10 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   ipcMain.on('set-interactive', (_e, value) => setInteractive(!!value))
+  // 吉祥物視窗發現游標一直在動、卻收不到滑鼠事件（鉤子被拿掉了）：重新接好，最多 10 秒一次
+  ipcMain.on('refresh-mouse', () => {
+    if (!interactive && Date.now() - lastMouseRefresh > 10000) refreshMouse()
+  })
   // 吉祥物身上的右鍵選單直接掛在吉祥物視窗上，不依賴 tray
   ipcMain.on('show-menu', () => {
     if (!win || win.isDestroyed()) return
@@ -905,15 +933,18 @@ if (!app.requestSingleInstanceLock()) {
   })
   // 彩蛋的測試按鈕（開發時才有）
   ipcMain.on('settings:test-egg', (_e, name) => {
-    if (app.isPackaged || !['dizzy', 'shake', 'rest', 'feast', 'hatch'].includes(name)) return
-    if (name === 'feast') {
-      // 黑熊吃鮭魚：先換成鮭魚（還有魚卵的話先讓它孵化），過一下再換成黑熊
-      if (config.salmonEgg) {
+    if (app.isPackaged || !['dizzy', 'shake', 'rest', 'faint', 'holiday', 'feast', 'hatch', 'scoop', 'friends'].includes(name)) return
+    // 換角色觸發的劇情：先換成前一隻，過一下再換成後一隻
+    const SCENES = { feast: ['salmon', 'bear'], scoop: ['spoonbill', 'crab'], friends: ['turtle', 'dolphin'] }
+    if (SCENES[name]) {
+      if (name === 'feast' && config.salmonEgg) {
+        // 黑熊吃鮭魚：還有魚卵的話先讓它孵化，才能換成鮭魚
         update({ salmonEgg: null })
         scheduleSalmonHatch()
       }
-      applySettings({ mascot: 'salmon' })
-      setTimeout(() => applySettings({ mascot: 'bear' }), 2500)
+      const [from, to] = SCENES[name]
+      applySettings({ mascot: from })
+      setTimeout(() => applySettings({ mascot: to }), 2500)
       return
     }
     if (name === 'hatch') {

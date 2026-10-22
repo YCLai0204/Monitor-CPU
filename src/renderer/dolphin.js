@@ -44,6 +44,7 @@ function drawDolphin(ctx, opts) {
     blink = 0,
     detail = 'high',
     time = 0,
+    hat = null,      // 節日的帽子（holiday.js）
   } = opts
   const low = detail === 'low'
 
@@ -72,6 +73,8 @@ function drawDolphin(ctx, opts) {
   drawBody(ctx, low)
   drawFlipper(ctx, phase, low)
   drawFace(ctx, { blink, heat, flinch, low, open: pose === 'held' })
+  // 節日的帽子：戴在圓圓的額頭上，往前歪一點
+  if (hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, hat, 26, -31, 17, 0.2)
   ctx.restore()
 }
 

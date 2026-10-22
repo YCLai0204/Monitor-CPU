@@ -45,6 +45,7 @@ function drawTurtle(ctx, opts) {
     blink = 0,
     detail = 'high',
     shadow = true,
+    hat = null,     // 節日的帽子（holiday.js）
     time = 0,
   } = opts
 
@@ -81,7 +82,7 @@ function drawTurtle(ctx, opts) {
   // 遠的那一側（較暗）先畫在殼後面
   drawFlipper(ctx, 12, -8, front.far, 23 * (1 - flinch * 0.4), true, low)
   drawRearFlipper(ctx, -21, -5, back.far, true, low)
-  drawHead(ctx, { phase, pose, flinch, blink, heat, low, lw })
+  drawHead(ctx, { phase, pose, flinch, blink, heat, low, lw, hat })
   drawShell(ctx, low, lw)
   drawRearFlipper(ctx, -19, -3, back.near, false, low)
   drawFlipper(ctx, 14, -6, front.near, 25 * (1 - flinch * 0.4), false, low)
@@ -227,7 +228,7 @@ function drawShell(ctx, low, lw) {
   ctx.stroke()
 }
 
-function drawHead(ctx, { phase, pose, flinch, blink, heat, low, lw }) {
+function drawHead(ctx, { phase, pose, flinch, blink, heat, low, lw, hat }) {
   const bob = pose === 'land' ? Math.sin(phase) * 1.2 : Math.sin(phase * 0.5) * 0.8
   const hx = 34 - flinch * 5
   const hy = -12 + bob
@@ -285,6 +286,8 @@ function drawHead(ctx, { phase, pose, flinch, blink, heat, low, lw }) {
     ctx.fill()
     ctx.globalAlpha = 1
   }
+  // 節日的帽子：戴在小小的頭頂，往後歪一點
+  if (hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, hat, hx - 1, hy - 6, 15, -0.15)
 }
 
 function drawSweat(ctx, heat, time) {

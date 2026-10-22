@@ -53,6 +53,8 @@ function drawBear(ctx, opts) {
     shadow = true,
     time = 0,
     holding = null,  // 'eat' 時手上拿的東西：null 是青剛櫟果實，'salmon' 是抓到的鮭魚（彩蛋）
+    hat = null,      // 節日的帽子（holiday.js）
+    holiday = null,  // 節日（holiday.js）：吃的東西換成那個節日的點心
   } = opts
 
   const low = detail === 'low'
@@ -77,7 +79,7 @@ function drawBear(ctx, opts) {
   }
 
   if (pose === 'run') {
-    drawRun(ctx, { dir, phase, speed, heat, blink, low, time })
+    drawRun(ctx, { dir, phase, speed, heat, blink, low, time, hat })
     ctx.restore()
     return
   }
@@ -90,7 +92,7 @@ function drawBear(ctx, opts) {
     ctx.translate(0, 31)
     drawBody(ctx, low, wall * 0.7)
     drawClimbLimbs(ctx, wall, phase, low)
-    drawHead(ctx, { blink, heat, low, pose, look, lookY })
+    drawHead(ctx, { blink, heat, low, pose, look, lookY, hat })
     ctx.restore()
     if (heat > 0.35 && !low) drawSweat(ctx, heat, time)
     ctx.restore()
@@ -108,13 +110,19 @@ function drawBear(ctx, opts) {
   // 兩隻手都畫在身體前面（轉頭時換前後層會一閃一閃的，看起來不自然）
   drawBody(ctx, low)
   const chew = pose === 'eat' ? Math.max(0, Math.sin(time * 0.018)) * 1.5 : 0
-  drawHead(ctx, { blink, heat, low, pose, look, chew })
+  drawHead(ctx, { blink, heat, low, pose, look, chew, hat })
   for (const side of [-1, 1]) drawArm(ctx, side, armAngle(pose, side, phase, time), low)
   if (pose === 'eat' && holding === 'salmon' && window.MascotArt && window.MascotArt.salmon) {
     // 彩蛋：抓到的鮭魚，在手上扭來扭去
     ctx.save()
     ctx.translate(0.5, -39 + chew)
     window.MascotArt.salmon.draw(ctx, { scale: 0.45, pose: 'held', time })
+    ctx.restore()
+  } else if (pose === 'eat' && holiday && window.HolidayArt) {
+    // 節日：捧著那個節日的點心（月餅、粽子、橘子）
+    ctx.save()
+    ctx.translate(0.5, -40 + chew)
+    window.HolidayArt.drawTreat(ctx, holiday)
     ctx.restore()
   } else if (pose === 'eat') {
     // 雙手捧在嘴巴正前方的果實，跟著咀嚼一起動
@@ -196,7 +204,7 @@ function drawLegs(ctx, pose, phase, stride, low, look) {
  * 四腳衝刺（側面，預設頭朝右，dir = -1 時左右翻過來）。
  * 跑步的節奏：前腳一對、後腳一對輪流蹬地，身體跟著起伏、微微前後傾。
  */
-function drawRun(ctx, { dir, phase, speed, heat, blink, low, time }) {
+function drawRun(ctx, { dir, phase, speed, heat, blink, low, time, hat }) {
   const p = phase
   const lift = Math.max(0, Math.sin(p * 2)) * 4 // 一步跳起來一下
   const tilt = Math.sin(p) * 0.07
@@ -304,6 +312,8 @@ function drawRun(ctx, { dir, phase, speed, heat, blink, low, time }) {
   ctx.lineWidth = low ? 2.4 : 1.4
   ctx.strokeStyle = C.outline
   ctx.stroke()
+  // 節日的帽子：衝刺時頭往前伸，帽子跟著往前歪一點
+  if (hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, hat, hx + 1, hy - 10, 21, 0.2)
   // 口鼻往前凸
   ctx.beginPath()
   ctx.ellipse(hx + 12, hy + 4, 7.5, 5.5, 0.1, 0, Math.PI * 2)
@@ -465,7 +475,7 @@ function drawBody(ctx, low, turn = 0) {
   ctx.stroke()
 }
 
-function drawHead(ctx, { blink, heat, low, pose, look, lookY = 0, chew = 0 }) {
+function drawHead(ctx, { blink, heat, low, pose, look, lookY = 0, chew = 0, hat = null }) {
   const cx = look * 1.5
   const cy = -60 + chew
   const fy = lookY * 3.5 // 五官往上或往下移，看起來像抬頭、低頭
@@ -561,6 +571,8 @@ function drawHead(ctx, { blink, heat, low, pose, look, lookY = 0, chew = 0 }) {
     ctx.fill()
     ctx.globalAlpha = 1
   }
+  // 節日的帽子：戴在兩隻耳朵中間
+  if (hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, hat, cx, cy - 13, 24)
 }
 
 function drawSweat(ctx, heat, time) {
@@ -637,11 +649,18 @@ function drawAcorn(ctx, x, y, tilt) {
 }
 
 /** 偷偷放在視窗頂端的食物：兩顆青剛櫟果實和一片葉子，原點是放在視窗頂端的位置，偶爾閃一下。 */
-function drawFood(ctx, { scale = 1, time = 0 } = {}) {
+function drawFood(ctx, { scale = 1, time = 0, holiday = null } = {}) {
   ctx.save()
   ctx.scale(scale, scale)
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
+  if (holiday && window.HolidayArt) {
+    // 節日：換成那個節日的點心，兩個並排
+    window.HolidayArt.drawTreat(ctx, holiday, -5, 0)
+    window.HolidayArt.drawTreat(ctx, holiday, 6, 0)
+    ctx.restore()
+    return
+  }
   // 葉子
   ctx.beginPath()
   ctx.moveTo(-14, -1)

@@ -46,6 +46,7 @@ function drawSalmon(ctx, opts) {
     blink = 0,
     detail = 'high',
     time = 0,
+    hat = null,      // 節日的帽子（holiday.js）
   } = opts
   const low = detail === 'low'
 
@@ -75,6 +76,8 @@ function drawSalmon(ctx, opts) {
   drawBody(ctx, low)
   drawFins(ctx, phase, low, 'front')
   drawFace(ctx, { blink, heat, flinch, low, open: pose === 'held' })
+  // 節日的帽子：戴在眼睛上方的頭頂，順著頭的斜度往前歪
+  if (hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, hat, 21, -21.5, 14, 0.35)
   ctx.restore()
 }
 

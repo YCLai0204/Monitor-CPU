@@ -109,6 +109,7 @@ function drawSpoonbill(ctx, opts) {
     low,
     lw,
     time,
+    hat: opts.hat, // 節日的帽子（holiday.js）
   })
   if (heat > 0.35 && !low && !icon) drawSweat(ctx, heat, time)
 
@@ -344,6 +345,8 @@ function drawHead(ctx, o) {
   const billAngle = -look * 0.75 + sweep
   drawBill(ctx, fx, cy + 5, billAngle, low)
 
+  // 節日的帽子：戴在頭頂（冠羽從帽子後面垂下來）
+  if (o.hat && window.HolidayArt) window.HolidayArt.drawHat(ctx, o.hat, fx * 0.4, cy - r + 3, 19)
   ctx.restore()
 }
 

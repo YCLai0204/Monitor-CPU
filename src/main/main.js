@@ -489,9 +489,22 @@ const PROMOTE_TRAY_PS = [
   '$result',
 ].join('\n')
 
+/**
+ * 轉成長檔名。portable exe 解壓到 %TEMP% 執行，使用者資料夾名稱有空白之類的時候，
+ * process.execPath 會是 8.3 短檔名（C:\Users\WINDOW~1\...），但 Windows 的系統匣紀錄存的是長檔名，
+ * 直接比對會永遠找不到。
+ */
+function longPath(p) {
+  try {
+    return fs.realpathSync.native(p)
+  } catch (_) {
+    return p
+  }
+}
+
 function promoteTrayIcon(attempt) {
   if (process.platform !== 'win32' || !tray) return
-  const exe = process.execPath
+  const exe = longPath(process.execPath)
   if ((config.promotedTrayPaths || []).some((p) => p.toLowerCase() === exe.toLowerCase())) return
 
   execFile(

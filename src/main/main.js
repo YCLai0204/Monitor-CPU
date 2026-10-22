@@ -98,6 +98,7 @@ const BIRD_CYCLES_PER_SEC = [0.6, 2.5] // 0% 與 100% 負載時每秒搖幾個�
 
 // 圖示第一次出現後 Explorer 才會建立它的紀錄，所以分幾次、越等越久去找
 const PROMOTE_RETRY_MS = [1500, 3000, 6000, 12000, 20000]
+const CURSOR_POLL_MS = 100 // 多久讀一次游標位置（滑鼠鉤子收不到移動時的備案，見 startCursorPoll）
 
 let win = null
 let settingsWin = null
@@ -108,6 +109,7 @@ let config = { ...DEFAULTS }
 let lastIconLoad = -1
 let currentLoad = 0
 let interactive = false
+let menuOpen = false // 吉祥物身上的右鍵選單開著
 let expanded = false // 拖曳中：視窗展開成涵蓋所有螢幕
 let layout = null // 最後一次算出的視窗尺寸與工具列高度；renderer 太晚載入來不及收 layout 事件時主動來問
 let promoteTimer = null
@@ -556,6 +558,38 @@ function setInteractive(next) {
   win.setIgnoreMouseEvents(!next, { forward: true })
 }
 
+/**
+ * 穿透中的視窗靠 Electron 的全域滑鼠鉤子才知道游標移上來。但前景是系統管理員權限的視窗
+ * （例如工作管理員、有些遊戲）時，Windows 不讓一般權限程式的鉤子收到滑鼠移動，
+ * 吉祥物就不會接管滑鼠、也不會顯示數值。讀游標位置不受這個限制，所以另外定期讀，
+ * 游標在視窗範圍內而且有移動就轉給 renderer，由它判斷是不是在吉祥物身上；離開視窗範圍時送一次 null。
+ * 接管滑鼠之後也要繼續讀：那種情況下視窗本身一樣收不到滑鼠移動，不讀的話 renderer 會以為
+ * 游標一直停在剛移上來的地方，數值要等吉祥物自己走開才會消失。
+ * 右鍵選單開著時不讀：游標離開吉祥物會讓視窗恢復穿透，點選單外面就穿過去了，選單收不到、關不掉。
+ */
+function startCursorPoll() {
+  let last = ''
+  setInterval(() => {
+    if (!win || win.isDestroyed() || !win.isVisible() || menuOpen) {
+      last = ''
+      return
+    }
+    const p = screen.getCursorScreenPoint()
+    const b = win.getContentBounds()
+    const x = p.x - b.x
+    const y = p.y - b.y
+    if (x < 0 || y < 0 || x >= b.width || y >= b.height) {
+      if (last !== 'out') win.webContents.send('cursor', null)
+      last = 'out'
+      return
+    }
+    const key = `${x},${y}`
+    if (key === last) return // 游標沒動就跟鉤子一樣不送，避免一直喚醒 renderer
+    last = key
+    win.webContents.send('cursor', { x, y })
+  }, CURSOR_POLL_MS)
+}
+
 function applyCrabVisibility() {
   if (!win || win.isDestroyed()) return
   if (config.showCrab) {
@@ -765,6 +799,7 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(() => {
       if (win && !win.isDestroyed() && win.isVisible() && !interactive) win.setAlwaysOnTop(true, 'screen-saver')
     }, 10000)
+    startCursorPoll()
   })
 
   // 註冊這個監聽器（即使什麼都不做）就會取消 Electron 的自動結束，讓程式常駐在背景
@@ -777,7 +812,21 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on('set-interactive', (_e, value) => setInteractive(!!value))
   // 系統匣圖示可能被關掉了，所以右鍵選單直接掛在吉祥物視窗上，不依賴 tray
   ipcMain.on('show-menu', () => {
-    if (win && !win.isDestroyed()) buildMenu().popup({ window: win })
+    if (!win || win.isDestroyed()) return
+    menuOpen = true
+    // 視窗平常不能取得焦點（不搶目前視窗的焦點），但選單所屬的程式要在前景，點選單外面才會關掉，
+    // 所以開選單時暫時讓它可以取得焦點，關掉後再改回來。
+    // Windows 上 setFocusable(true) 會順便讓視窗出現在工具列，要馬上再藏起來
+    win.setFocusable(true)
+    win.setSkipTaskbar(true)
+    win.focus()
+    buildMenu().popup({
+      window: win,
+      callback: () => {
+        menuOpen = false
+        if (win && !win.isDestroyed()) win.setFocusable(false)
+      },
+    })
   })
   ipcMain.on('open-settings', openSettings)
   ipcMain.handle('get-config', () => config)

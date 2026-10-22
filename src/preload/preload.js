@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('crabAPI', {
   onConfig: (cb) => ipcRenderer.on('config', (_e, data) => cb(data)),
   onLayout: (cb) => ipcRenderer.on('layout', (_e, data) => cb(data)),
   onPerches: (cb) => ipcRenderer.on('perches', (_e, data) => cb(data)),
+  onCursor: (cb) => ipcRenderer.on('cursor', (_e, data) => cb(data)),
   setExpanded: (value) => ipcRenderer.send('set-expanded', value),
   dropOnDisplay: (id) => ipcRenderer.send('drop-on-display', id),
   getLayout: () => ipcRenderer.invoke('get-layout'),

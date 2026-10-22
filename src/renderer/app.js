@@ -2427,6 +2427,14 @@ document.addEventListener('mouseleave', () => {
 
 // ---------------------------------------------------------------- 主程序來的資料
 
+// 主程序定期讀到的游標位置（離開視窗範圍時是 null）：前景是系統管理員權限的視窗時收不到 mousemove，
+// 靠這個發現游標移到吉祥物上、也靠這個發現游標離開
+window.crabAPI.onCursor((pos) => {
+  if (drag) return
+  lastMouse = pos
+  setHover(!!pos && overMascot(pos.x, pos.y))
+})
+
 window.crabAPI.onMetrics((data) => { metrics = data })
 window.crabAPI.onConfig((data) => {
   const wasFlyer = isFlyer()

@@ -143,13 +143,9 @@ function render(next) {
   perchRow.style.opacity = perchOk ? '' : '0.45'
   perchRow.querySelector('input').disabled = !perchOk
 
-  // 吉祥物和小圖示至少要留一個
-  const crabLocked = c.showCrab && !c.showTray
-  const trayLocked = c.showTray && !c.showCrab
-  lock('showCrab', crabLocked, '至少要留一個：右下角小圖示關掉時，吉祥物不能關')
-  lock('showTray', trayLocked, '至少要留一個：吉祥物關掉時，小圖示不能關')
-  if (!crabLocked) $('#showCrab-note').textContent = '關掉的話只剩右下角的小圖示'
-  if (!trayLocked) $('#showTray-note').textContent = '關掉的話，在吉祥物身上按右鍵叫出選單'
+  // 系統匣圖示一直都在（關掉只是收進 ^ 裡），所以兩個都可以關，一定找得到設定
+  $('#showCrab-note').textContent = c.showTray ? '關掉的話只剩右下角的小圖示' : '關掉的話只剩右下角 ^ 裡面的小圖示'
+  $('#showTray-note').textContent = '關掉的話小圖示會收進右下角的 ^ 裡面，點開 ^ 一樣找得到'
 
   const select = $('#display')
   const current = c.displayId === null ? (state.displays.find((d) => d.primary) || {}).id : c.displayId
@@ -185,13 +181,6 @@ function renderRender(r) {
   $('#render-info').textContent = lines.join('\n')
   $('#relaunch-row').hidden = r.next === r.active
   $('#relaunch').textContent = `重新啟動，改用「${RENDER_NAME[r.next]}」`
-}
-
-function lock(key, locked, note) {
-  const box = $(`input[data-key=${key}]`)
-  box.disabled = locked
-  box.closest('.check').classList.toggle('locked', locked)
-  if (locked) $(`#${key}-note`).textContent = note
 }
 
 function renderMetrics(m) {

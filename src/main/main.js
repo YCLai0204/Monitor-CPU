@@ -61,7 +61,7 @@ const DEFAULTS = {
   roamScreen: false,      // 可以在整個畫面活動（每種吉祥物都適用）；關掉就只在底下的工具列上
   perchWindows: true,     // 整個畫面活動時可以到其他視窗上（小鳥停標題列、螃蟹爬上去）
   showCrab: true,         // 在桌面（工具列上）顯示吉祥物
-  showTray: true,         // 在右下角系統匣顯示小圖示
+  showTray: true,         // 小圖示直接顯示在時鐘旁邊；關掉的話收進 ^ 裡面（圖示一直都在，才找得到設定）
   renderMode: 'auto',     // 繪圖方式：'auto' 依核心數自動選 | 'cpu' 省 GPU（關掉硬體加速）| 'gpu' 用顯示卡；重新啟動才生效
   promotedTrayPaths: [],  // 已經自動設成「直接顯示在右下角」過的 exe 路徑
 }
@@ -149,8 +149,6 @@ function loadConfig() {
     config = { ...DEFAULTS }
   }
   if (!MASCOTS.includes(config.mascot)) config.mascot = DEFAULTS.mascot
-  // 兩個都關掉就完全找不到選單了（設定檔被手動改壞時才會發生）
-  if (!config.showCrab && !config.showTray) config.showTray = true
 }
 
 function saveConfig() {
@@ -451,7 +449,7 @@ function createTray() {
   applyTrayMascot()
 
   clearTimeout(promoteTimer)
-  promoteTimer = setTimeout(() => promoteTrayIcon(0), PROMOTE_RETRY_MS[0])
+  promoteTimer = setTimeout(() => syncTrayPromotion(0, false), PROMOTE_RETRY_MS[0])
 }
 
 function destroyTray() {
@@ -462,28 +460,30 @@ function destroyTray() {
   tray = null
 }
 
-// ---------------------------------------------------------------- 右下角直接顯示
+// ---------------------------------------------------------------- 右下角直接顯示 / 收進 ^
 
 /**
  * Windows 11 預設把新程式的系統匣圖示收進 ^ 箭頭裡，要使用者自己到
  * 「設定 → 個人化 → 工作列 → 其他系統匣圖示」打開。那個開關其實就是
- * HKCU\Control Panel\NotifyIconSettings\<id> 底下的 IsPromoted，
+ * HKCU\Control Panel\NotifyIconSettings\<id> 底下的 IsPromoted（1 直接顯示、0 收進 ^），
  * 每筆紀錄用 ExecutablePath 對應到 exe。
  *
- * 每個 exe 位置只自動打開一次：之後使用者若在 Windows 設定裡把它收回去，
- * 就尊重他的選擇。Windows 10 用的是另一種二進位格式，找不到紀錄就放棄。
+ * 系統匣圖示一直都在，設定裡的「在右下角顯示小圖示」決定 IsPromoted：
+ * 每個 exe 位置第一次啟動時照設定改一次，之後使用者若在 Windows 設定裡自己改了，就尊重他的選擇；
+ * 只有在設定視窗切換這個選項時才會再改。Windows 10 用的是另一種二進位格式，找不到紀錄就放棄。
  *
- * exe 路徑用環境變數傳進去，使用者名稱是中文的電腦也不會有編碼問題。
+ * exe 路徑和要改成的值用環境變數傳進去，使用者名稱是中文的電腦也不會有編碼問題。
  */
 const PROMOTE_TRAY_PS = [
   "$ErrorActionPreference = 'SilentlyContinue'",
   '$exe = $env:MONITOR_CPU_EXE',
+  '$want = [int]$env:MONITOR_CPU_PROMOTE',
   "$result = 'notfound'",
   "foreach ($key in Get-ChildItem 'HKCU:\\Control Panel\\NotifyIconSettings') {",
   '  $p = Get-ItemProperty $key.PSPath',
   '  if ($p.ExecutablePath -and $p.ExecutablePath -eq $exe) {',
-  "    if ($p.IsPromoted -eq 1) { if ($result -eq 'notfound') { $result = 'already' } }",
-  "    else { Set-ItemProperty $key.PSPath -Name IsPromoted -Value 1 -Type DWord; $result = 'promoted' }",
+  "    if ([int]$p.IsPromoted -eq $want) { if ($result -eq 'notfound') { $result = 'already' } }",
+  "    else { Set-ItemProperty $key.PSPath -Name IsPromoted -Value $want -Type DWord; $result = 'changed' }",
   '  }',
   '}',
   '$result',
@@ -502,26 +502,32 @@ function longPath(p) {
   }
 }
 
-function promoteTrayIcon(attempt) {
+/**
+ * 照「在右下角顯示小圖示」改 Windows 的紀錄。force 是設定視窗剛切換過（一定要改）；
+ * 不是的話（啟動時）這個 exe 位置已經改過一次就不再動，尊重使用者在 Windows 設定裡的選擇。
+ * promotedTrayPaths 記的是「已經照設定改過一次」的 exe 位置（名稱沿用舊版）。
+ */
+function syncTrayPromotion(attempt, force) {
   if (process.platform !== 'win32' || !tray) return
   const exe = longPath(process.execPath)
-  if ((config.promotedTrayPaths || []).some((p) => p.toLowerCase() === exe.toLowerCase())) return
+  const known = (config.promotedTrayPaths || []).some((p) => p.toLowerCase() === exe.toLowerCase())
+  if (known && !force) return
 
   execFile(
     'powershell.exe',
     ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(PROMOTE_TRAY_PS, 'utf16le').toString('base64')],
-    { windowsHide: true, timeout: 15000, env: { ...process.env, MONITOR_CPU_EXE: exe } },
+    { windowsHide: true, timeout: 15000, env: { ...process.env, MONITOR_CPU_EXE: exe, MONITOR_CPU_PROMOTE: config.showTray ? '1' : '0' } },
     (_err, stdout) => {
       const result = String(stdout || '').trim()
-      if (result === 'promoted' || result === 'already') {
-        update({ promotedTrayPaths: [...(config.promotedTrayPaths || []), exe] })
-        // 剛改好的話重新掛一次圖示，Explorer 重新登記時就會照新設定直接顯示
-        if (result === 'promoted' && tray) {
+      if (result === 'changed' || result === 'already') {
+        if (!known) update({ promotedTrayPaths: [...(config.promotedTrayPaths || []), exe] })
+        // 剛改好的話重新掛一次圖示，Explorer 重新登記時就會照新設定顯示或收進 ^
+        if (result === 'changed' && tray) {
           destroyTray()
           createTray()
         }
       } else if (attempt + 1 < PROMOTE_RETRY_MS.length) {
-        promoteTimer = setTimeout(() => promoteTrayIcon(attempt + 1), PROMOTE_RETRY_MS[attempt + 1])
+        promoteTimer = setTimeout(() => syncTrayPromotion(attempt + 1, force), PROMOTE_RETRY_MS[attempt + 1])
       }
     }
   )
@@ -619,14 +625,15 @@ function applyCrabVisibility() {
   applyWindowWatcher()
 }
 
+/** 設定視窗切換「在右下角顯示小圖示」：照新的設定改 Windows 的紀錄（直接顯示 / 收進 ^）。 */
 function applyTrayVisibility() {
-  if (config.showTray && !tray) createTray()
-  else if (!config.showTray && tray) destroyTray()
+  if (!tray) createTray()
+  syncTrayPromotion(0, true)
 }
 
 /**
  * 所有設定變更都從這裡進來（設定視窗、再開一次 exe）。
- * 吉祥物與系統匣圖示是唯二能叫出選單的地方，所以不允許兩個同時關掉；
+ * 系統匣圖示一直都在（「在右下角顯示小圖示」關掉只是收進 ^ 裡），所以吉祥物和小圖示可以都關掉；
  * 不合法的變更回傳 false，設定視窗會把畫面還原。
  */
 function applySettings(patch) {
@@ -635,8 +642,6 @@ function applySettings(patch) {
     if (SETTING_RULES[key] && SETTING_RULES[key](value)) clean[key] = value
   }
   if (!Object.keys(clean).length) return false
-  const next = { ...config, ...clean }
-  if (!next.showCrab && !next.showTray) return false
 
   update(clean)
   if ('showCrab' in clean) applyCrabVisibility()
@@ -783,7 +788,7 @@ if (!app.requestSingleInstanceLock()) {
     loadConfig()
     applyLoginItem()
     createWindow()
-    if (config.showTray) createTray()
+    createTray() // 一直都在：「在右下角顯示小圖示」關掉時是收進 ^ 裡面
 
     metrics = new Metrics({ probeScript: probeScriptPath() })
     metrics.on('update', (state) => {
@@ -824,7 +829,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   ipcMain.on('set-interactive', (_e, value) => setInteractive(!!value))
-  // 系統匣圖示可能被關掉了，所以右鍵選單直接掛在吉祥物視窗上，不依賴 tray
+  // 吉祥物身上的右鍵選單直接掛在吉祥物視窗上，不依賴 tray
   ipcMain.on('show-menu', () => {
     if (!win || win.isDestroyed()) return
     menuOpen = true

@@ -1,6 +1,6 @@
 {
   "name": "monitor-cpu",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "工具列上的吉祥物（目前是螃蟹），CPU / GPU 負載越高跑得越快、顏色也越紅。",
   "main": "src/main/main.js",
   "scripts": {

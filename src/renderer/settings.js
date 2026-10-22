@@ -62,6 +62,16 @@ const MASCOTS = [
     perch: '綠蠵龜是水生動物，不會到其他視窗上',
   },
   {
+    id: 'salmon',
+    group: 'water',
+    name: '櫻花鉤吻鮭',
+    roamOn: '把整個畫面當成溪流慢慢游，累了回到工具列的淺水裡',
+    roamOff: '關掉的話在工具列的淺水裡游，偶爾跳出水面',
+    noWindows: true,
+    perchTitle: '到其他視窗上',
+    perch: '櫻花鉤吻鮭是魚，不會到其他視窗上',
+  },
+  {
     id: 'pangolin',
     group: 'land',
     name: '台灣穿山甲',

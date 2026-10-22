@@ -15,6 +15,9 @@ const ART = window.MascotArt || {}
  * foodReach 是吃東西時嘴巴離腳底中心多遠（scale = 1 時）：有的話會停在食物旁邊、面向食物吃，
  * 食物吃的時候留在原地照常畫（像穿山甲舔蟻丘）；沒有的話走到食物正上方拿起來吃（像黑熊捧著吃）。
  * run 是負載高時改用四腳衝刺：負載到 on% 開始、掉到 off% 以下才停（避免在門檻附近一直切換），速度乘上 boost。
+ * 游泳類的選項：aquatic 是一直待在水裡、不會上岸（像魚），工具列上永遠有一片淺水跟著；
+ * waterDepth 是那片淺水多深（scale = 1 時的 px，沒寫就是 WATER_DEPTH）；leap 是偶爾跳出水面（height 是多高），
+ * 被戳到也會跳。
  * curl 是被戳到時捲成一顆球（像穿山甲）：原地縮著不動，過幾秒才打開；扒在牆上時會直接掉下去。
  * 有 curl 的動物被抓著、在空中、衝刺時也是一顆球（BALL_POSES），捲起來、打開的過程由畫法依 curl 參數（0..1）畫。
  *
@@ -44,6 +47,15 @@ const MASCOT_DEFS = {
   },
   spoonbill: { engine: 'fly', halfW: 48, top: 86, draw: ART.spoonbill && ART.spoonbill.draw },
   turtle: { engine: 'swim', halfW: 44, top: 32, draw: ART.turtle && ART.turtle.draw },
+  salmon: {
+    engine: 'swim',
+    aquatic: true,
+    halfW: 38,
+    top: 32,
+    waterDepth: 20,
+    leap: { height: 70 },
+    draw: ART.salmon && ART.salmon.draw,
+  },
   pangolin: {
     engine: 'crawl',
     climber: true,
@@ -1746,7 +1758,9 @@ const MAX_PARTICLES = 90
  *   'land'   在工具列上爬（岸上）
  *   'water'  在工具列上的淺水裡游（身邊出現一片淺水，有波浪、漣漪、水花）
  *   'swim'   整個畫面模式：把整個畫面當成海，在畫面上游泳
+ *   'leap'   跳出水面（有 leap 的水生動物）：畫一個弧線再落回淺水
  *   'fall'   被放開、或從整個畫面切回工具列時往下掉
+ * 一直待在水裡的動物（aquatic）不會進 'land'。
  * 位置一樣用 actor.x / actor.lift（腹甲底部）。水生動物不會到其他視窗上。
  */
 const turtle = {
@@ -1768,6 +1782,11 @@ const turtle = {
 
 function swimFree() {
   return isSwimmer() && roamFree()
+}
+
+/** 工具列上那片淺水的深度（px）。 */
+function waterDepth() {
+  return (mascotDef().waterDepth || WATER_DEPTH) * config.scale
 }
 
 function setSwimPos(x, y) {
@@ -1817,6 +1836,22 @@ function stepParticles(dt) {
     }
     if (p.life <= 0) turtle.particles.splice(i, 1)
   }
+}
+
+const LEAP_GRAVITY = 900 // 跳出水面時的重力（px/s²，乘上 scale），比掉落時小，弧線才不會太急
+
+/** 跳出水面：往前上方畫一個弧線，負載越高跳越高。上面空間不夠就不跳，回傳有沒有跳。 */
+function startLeap(e) {
+  const s = config.scale
+  // 數值氣泡也要有地方放
+  const room = groundY() - cur.top - topH() - LABEL_ROOM
+  const h = Math.min(mascotDef().leap.height * s * (0.75 + 0.5 * e), room)
+  if (h < 20 * s) return false
+  turtle.mode = 'leap'
+  actor.vy = -Math.sqrt(2 * LEAP_GRAVITY * s * h)
+  turtle.vx = actor.dir * Math.max(actor.speed, 110 * s)
+  splash(actor.x, groundY() - waterDepth(), 10, 0.9)
+  return true
 }
 
 /** 往 (tx, ty) 游過去（跟小鳥飛行一樣的轉向方式，但慢很多、轉得比較圓）。回傳離目標多遠。 */
@@ -1890,13 +1925,20 @@ function stepSwim(dt, load) {
         turtle.mode = 'water'
         turtle.waterX = actor.x
         turtle.timer = rand(4, 8)
-        splash(actor.x, groundY() - WATER_DEPTH * s, 14, 1.1)
+        splash(actor.x, groundY() - waterDepth(), 14, 1.1)
         if (expanded) dropOnDisplay(cur.id)
       }
       return
     }
 
     case 'land': {
+      if (mascotDef().aquatic) {
+        // 魚不會上岸（例如從綠蠵龜換過來時還在岸上）：直接下水
+        turtle.mode = 'water'
+        turtle.waterX = actor.x
+        turtle.timer = rand(8, 18)
+        return
+      }
       // 岸上爬得很慢；低負載時爬一爬就停下來
       turtle.water = approach(turtle.water, 0, dt * 1.2)
       turtle.tilt = approach(turtle.tilt, 0, dt * 4)
@@ -1921,7 +1963,7 @@ function stepSwim(dt, load) {
         turtle.mode = 'water'
         turtle.waterX = actor.x
         turtle.timer = rand(8, 18) * (1 + e)
-        splash(actor.x + actor.dir * 20 * s, groundY() - WATER_DEPTH * s, 12)
+        splash(actor.x + actor.dir * 20 * s, groundY() - waterDepth(), 12)
       }
       return
     }
@@ -1942,19 +1984,25 @@ function stepSwim(dt, load) {
       turtle.rippleT -= dt
       if (turtle.rippleT <= 0) {
         turtle.rippleT = 0.55 - 0.3 * e
-        addParticle({ kind: 'ripple', x: actor.x + actor.dir * 16 * s, y: groundY() - WATER_DEPTH * s + 1, r: 5 * s, life: 1 })
+        addParticle({ kind: 'ripple', x: actor.x + actor.dir * 16 * s, y: groundY() - waterDepth() + 1, r: 5 * s, life: 1 })
       }
-      if (e > 0.5 && Math.random() < dt * (1 + 4 * hyper)) splash(actor.x + actor.dir * 22 * s, groundY() - WATER_DEPTH * s, 4, 0.7)
+      if (e > 0.5 && Math.random() < dt * (1 + 4 * hyper)) splash(actor.x + actor.dir * 22 * s, groundY() - waterDepth(), 4, 0.7)
+      const def = mascotDef()
+      // 偶爾跳出水面，負載越高越常跳
+      if (def.leap && Math.random() < dt * (0.03 + 0.2 * e + 0.3 * hyper) && startLeap(e)) return
       turtle.timer -= dt
       if (turtle.timer <= 0) {
-        if (swimFree()) {
+        if (def.aquatic && !swimFree()) {
+          // 一直待在水裡的動物不上岸，繼續游
+          turtle.timer = rand(8, 18)
+        } else if (swimFree()) {
           // 游出淺水，往上游到畫面上
           turtle.mode = 'swim'
           turtle.timer = rand(14, 30) * (1 - 0.4 * e)
           turtle.vx = actor.dir * actor.speed
           turtle.vy = -rand(60, 120) * s
           turtle.target = null
-          splash(actor.x, groundY() - WATER_DEPTH * s, 10)
+          splash(actor.x, groundY() - waterDepth(), 10)
         } else if (e < 0.6 || Math.random() < 0.3) {
           // 上岸：水慢慢退掉，身上滴下水珠（負載高時比較喜歡待在水裡）
           turtle.mode = 'land'
@@ -1999,15 +2047,38 @@ function stepSwim(dt, load) {
         turtle.timer = rand(8, 16) * (1 - 0.4 * e)
         turtle.target = null
         setSwimPos(actor.x, groundY())
-        splash(actor.x, groundY() - WATER_DEPTH * s, 12)
+        splash(actor.x, groundY() - waterDepth(), 12)
       } else if (turtle.timer < -25) {
         turtle.target = null // 太久了還沒到（目標一直跑掉），換一個
       }
       return
     }
 
+    case 'leap': {
+      turtle.water = approach(turtle.water, 1, dt * 1.6)
+      actor.vy += LEAP_GRAVITY * s * dt
+      actor.lift -= actor.vy * dt
+      actor.x += turtle.vx * dt
+      if (actor.x < cur.left + m) { actor.x = cur.left + m; turtle.vx = Math.abs(turtle.vx); actor.dir = 1 }
+      if (actor.x > cur.right - m) { actor.x = cur.right - m; turtle.vx = -Math.abs(turtle.vx); actor.dir = -1 }
+      turtle.waterX = actor.x // 那片淺水跟著走，落水時才不會整片跳過去
+      // 身體順著弧線：往上時頭朝上、往下時頭朝下（正的角度是頭朝下）
+      turtle.tilt = clamp(Math.atan2(actor.vy, Math.abs(turtle.vx)), -1.2, 1.2)
+      actor.speed = Math.abs(turtle.vx)
+      actor.phase += dt * 9 // 在空中尾巴擺得很快
+      if (actor.lift <= 0 && actor.vy > 0) {
+        // 落回水裡
+        actor.lift = 0
+        actor.vy = 0
+        turtle.mode = 'water'
+        turtle.waterX = actor.x
+        splash(actor.x, groundY() - waterDepth(), 14, 1.1)
+      }
+      return
+    }
+
     default:
-      turtle.mode = 'land'
+      turtle.mode = mascotDef().aquatic ? 'water' : 'land'
   }
 }
 
@@ -2021,19 +2092,25 @@ function startleSwimmer(fromX) {
     turtle.vx = actor.dir * 220 * config.scale
     turtle.target = null
   } else if (turtle.mode === 'water') {
-    splash(actor.x, groundY() - WATER_DEPTH * config.scale, 8)
+    // 會跳的嚇一跳就跳出水面逃走
+    const load = clamp(metrics.load || 0, 0, 100)
+    if (!(mascotDef().leap && startLeap(load / 100))) splash(actor.x, groundY() - waterDepth(), 8)
   }
 }
 
-/** 綠蠵龜這一格的畫面：淺水（後）→ 烏龜 → 淺水（前）→ 水花泡泡；在畫面上游泳時身邊有一圈淡淡的水光。 */
+/**
+ * 游泳類這一格的畫面：淺水（後）→ 動物 → 淺水（前）→ 水花泡泡；在畫面上游泳時身邊有一圈淡淡的水光。
+ * 水和水花共用 turtle.js 的畫法，動物本身用各自的畫法。
+ */
 function renderSwimmer(now, rx, ry) {
   const art = ART.turtle
+  const def = mascotDef()
   const s = config.scale
   const load = clamp(metrics.load || 0, 0, 100)
   const water = {
     x: turtle.waterX,
     width: WATER_WIDTH * s,
-    surfaceY: groundY() - WATER_DEPTH * s,
+    surfaceY: groundY() - waterDepth(),
     groundY: groundY(),
     amount: turtle.water,
     time: now,
@@ -2048,10 +2125,13 @@ function renderSwimmer(now, rx, ry) {
     ctx.fillStyle = g
     ctx.fillRect(rx - 72 * s, ry - 86 * s, 144 * s, 144 * s)
   }
-  const pose = drag && drag.moved ? 'held' : turtle.mode === 'land' || turtle.mode === 'fall' ? 'land' : 'swim'
+  // 魚不會在岸上爬：掉下來的時候跟被抓著一樣扭來扭去
+  const pose = drag && drag.moved ? 'held'
+    : turtle.mode === 'leap' ? 'leap'
+      : turtle.mode === 'land' || turtle.mode === 'fall' ? (def.aquatic ? 'held' : 'land') : 'swim'
   ctx.save()
   ctx.translate(rx, ry)
-  art.draw(ctx, {
+  def.draw(ctx, {
     scale: s,
     dir: actor.dir,
     phase: actor.phase,
@@ -2125,7 +2205,7 @@ function render(now) {
   if (isSwimmer() && turtle.water > 0.01) {
     // 淺水上岸後會留在原地慢慢退掉，可能已經不在烏龜身邊
     const w = WATER_WIDTH * scale
-    boxes.push({ x: turtle.waterX - w / 2 - 4, y: groundY() - (WATER_DEPTH + 8) * scale, w: w + 8, h: (WATER_DEPTH + 12) * scale })
+    boxes.push({ x: turtle.waterX - w / 2 - 4, y: groundY() - waterDepth() - 8 * scale, w: w + 8, h: waterDepth() + 12 * scale })
   }
   if (isSwimmer() && turtle.particles.length) {
     // 水花和泡泡可能飛得比較遠，另外框起來
@@ -2524,6 +2604,7 @@ window.crabAPI.onMetrics((data) => { metrics = data })
 window.crabAPI.onConfig((data) => {
   const wasFlyer = isFlyer()
   const wasSwimmer = isSwimmer()
+  const wasMascot = config.mascot
   config = { ...config, ...data }
   // 吉祥物被隱藏時主程序已經把穿透設回去了，這邊的狀態要跟著重置
   if (config.showCrab === false) {
@@ -2535,11 +2616,15 @@ window.crabAPI.onConfig((data) => {
     actor.lift = 0
     landOn(groundPerch(), actor.x)
   }
-  // 換成綠蠵龜（或從綠蠵龜換走）：從岸上開始，水花泡泡清掉
-  if (isSwimmer() !== wasSwimmer) {
+  // 換成游泳類（或從游泳類換走、在游泳類之間換）：綠蠵龜從岸上開始、魚直接在水裡，水花泡泡清掉
+  if (isSwimmer() !== wasSwimmer || (isSwimmer() && config.mascot !== wasMascot)) {
     actor.lift = 0
-    turtle.mode = 'land'
+    actor.vy = 0
+    turtle.mode = mascotDef().aquatic ? 'water' : 'land'
+    turtle.waterX = actor.x
+    turtle.timer = rand(6, 12)
     turtle.water = 0
+    turtle.tilt = 0
     turtle.particles.length = 0
   }
   resize()

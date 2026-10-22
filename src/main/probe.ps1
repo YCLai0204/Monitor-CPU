@@ -1,4 +1,4 @@
-# probe.ps1 — 常駐取樣程序，每隔 IntervalMs 輸出一行 JSON 給 Electron 主程序讀取。
+﻿# probe.ps1 — 常駐取樣程序，每隔 IntervalMs 輸出一行 JSON 給 Electron 主程序讀取。
 #
 # 設計目標：在「大部分的 Windows 電腦」上都能跑，因此
 #   * 只用 Windows 內建的東西（CIM/WMI、效能計數器），不裝任何驅動或套件
@@ -66,7 +66,8 @@ foreach ($ns in @('root/LibreHardwareMonitor', 'root/OpenHardwareMonitor')) {
 }
 
 $gpuCounterPath = '\{0}(*)\{1}' -f (Get-LocalCounterName 'GPU Engine'), (Get-LocalCounterName 'Utilization Percentage')
-$gpuCounterWorks = $true
+$gpuFailures = 0                      # GPU 計數器連續讀不到幾次
+$gpuRetryAt = [datetime]::MinValue    # 連續讀不到太多次時，先暫停到這個時間再試
 
 # ---------------------------------------------------------------- 各項取樣
 
@@ -129,15 +130,22 @@ function Get-GpuFromHwm {
 function Get-GpuLoadFromCounter {
     # Windows 10/11 內建的 GPU Engine 計數器，不分廠牌（NVIDIA / AMD / Intel 都有）。
     # 每個 engine 各自算一條，把同一種 engtype 加總後取最大值，數字才會接近工作管理員。
-    if (-not $gpuCounterWorks) { return $null }
+    if ((Get-Date) -lt $script:gpuRetryAt) { return $null }
     # -MaxSamples 2 會回傳兩組取樣，直接取 .CounterSamples 會把兩組攤平在一起、加總後變成兩倍，所以只用最後一組。
     $sets = @(Get-Counter -Counter $gpuCounterPath -SampleInterval 1 -MaxSamples 2 -ErrorAction SilentlyContinue)
     $samples = $null
     if ($sets.Count -gt 0) { $samples = $sets[-1].CounterSamples }
     if (-not $samples) {
-        $script:gpuCounterWorks = $false
+        # 偶爾會讀不到（例如剛從睡眠恢復），不能讀不到一次就永遠不讀，不然要重開程式才會恢復。
+        # 連續讀不到 3 次才暫停 30 秒再試，沒有這個計數器的電腦才不會每一輪都白等兩秒。
+        $script:gpuFailures++
+        if ($script:gpuFailures -ge 3) {
+            $script:gpuFailures = 0
+            $script:gpuRetryAt = (Get-Date).AddSeconds(30)
+        }
         return $null
     }
+    $script:gpuFailures = 0
 
     $byType = @{}
     foreach ($s in $samples) {

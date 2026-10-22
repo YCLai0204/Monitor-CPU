@@ -1976,7 +1976,8 @@ function stepSwim(dt, load) {
       const dist = swimToward(t.x, t.y, maxV, dt, hyper, t.kind !== 'wander')
       actor.speed = Math.hypot(turtle.vx, turtle.vy)
       if (Math.abs(turtle.vx) > 8) actor.dir = turtle.vx > 0 ? 1 : -1
-      turtle.tilt = approach(turtle.tilt, clamp(turtle.vy / Math.max(1, maxV), -1, 1) * actor.dir * 0.5, dt * 3)
+      // 畫法是先左右翻再轉，所以正的角度不管朝哪邊都是頭朝下，不用再乘方向
+      turtle.tilt = approach(turtle.tilt, clamp(turtle.vy / Math.max(1, maxV), -1, 1) * 0.5, dt * 3)
       actor.phase += dt * (2.2 + 4 * e + 4 * hyper) * boost
       // 身後一串泡泡
       turtle.bubbleT -= dt

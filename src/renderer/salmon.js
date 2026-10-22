@@ -283,6 +283,80 @@ function drawFace(ctx, { blink, heat, flinch, low, open }) {
   }
 }
 
+// ---------------------------------------------------------------- 魚卵（彩蛋）
+
+/**
+ * 一顆鮭魚卵：半透明的橘色小球，裡面看得到小魚的兩個黑眼點（發眼卵）。原點是卵的底部中心。
+ * crack（0..1）是孵化進行到哪：一開始晃、出現裂痕，最後裂成上下兩半。
+ */
+function drawEgg(ctx, { scale = 1, time = 0, crack = 0 } = {}) {
+  const R = 6
+  ctx.save()
+  ctx.scale(scale, scale)
+  ctx.translate(0, -R)
+  if (crack > 0) ctx.rotate(Math.sin(time * 0.03) * 0.3 * Math.min(1, crack * 2))
+  const shell = (from, to) => {
+    ctx.beginPath()
+    ctx.arc(0, 0, R, from, to)
+    ctx.closePath()
+    const g = ctx.createRadialGradient(-2, -2, 1, 0, 0, R)
+    g.addColorStop(0, '#ffe0b8')
+    g.addColorStop(0.55, '#ff9d4f')
+    g.addColorStop(1, '#e4682c')
+    ctx.globalAlpha = 0.95
+    ctx.fillStyle = g
+    ctx.fill()
+    ctx.globalAlpha = 1
+    ctx.lineWidth = 0.9
+    ctx.strokeStyle = '#b4521f'
+    ctx.stroke()
+  }
+  if (crack < 0.85) {
+    shell(0, Math.PI * 2)
+    // 小魚的兩個眼點和捲著的身體
+    ctx.fillStyle = 'rgba(40, 26, 18, 0.85)'
+    ctx.beginPath()
+    ctx.arc(1, 0.8, 0.95, 0, Math.PI * 2)
+    ctx.arc(2.9, 0.3, 0.85, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(0.5, 0.5, 3.3, Math.PI * 0.2, Math.PI * 1.3)
+    ctx.lineWidth = 0.7
+    ctx.strokeStyle = 'rgba(150, 70, 30, 0.6)'
+    ctx.stroke()
+    // 反光
+    ctx.beginPath()
+    ctx.arc(-2.3, -2.4, 1.3, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)'
+    ctx.fill()
+    if (crack > 0.3) {
+      // 裂痕
+      ctx.beginPath()
+      ctx.moveTo(-R, -0.5)
+      ctx.lineTo(-3, 0.8)
+      ctx.lineTo(-1, -0.8)
+      ctx.lineTo(1.5, 0.9)
+      ctx.lineTo(3.5, -0.6)
+      ctx.lineTo(R, 0.4)
+      ctx.globalAlpha = Math.min(1, (crack - 0.3) * 3)
+      ctx.lineWidth = 0.8
+      ctx.strokeStyle = '#7a3412'
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
+  } else {
+    // 裂成兩半：上半邊往上翻開
+    const d = ((crack - 0.85) / 0.15) * 4
+    shell(0, Math.PI)
+    ctx.save()
+    ctx.translate(-1, -d)
+    ctx.rotate(-d * 0.15)
+    shell(Math.PI, Math.PI * 2)
+    ctx.restore()
+  }
+  ctx.restore()
+}
+
 // ---------------------------------------------------------------- 圖示
 
 const iconFit = {}
@@ -328,5 +402,5 @@ function fitIcon(size, b, draw) {
   return c.toDataURL('image/png')
 }
 
-window.MascotArt = Object.assign(window.MascotArt || {}, { salmon: { draw: drawSalmon, renderIcon } })
+window.MascotArt = Object.assign(window.MascotArt || {}, { salmon: { draw: drawSalmon, drawEgg, renderIcon } })
 })()

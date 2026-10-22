@@ -13,7 +13,7 @@
  *   'fall'     在空中：手腳張開亂揮
  *   'held'     被抓著：手舉高、腳亂踢
  *   'sit'      坐在視窗頂端（像坐在樹上的熊窩）：腳往前伸，看得到腳底的肉墊
- *   'eat'      坐著雙手抱著青剛櫟果實啃
+ *   'eat'      坐著雙手抱著青剛櫟果實啃（holding = 'salmon' 時抱的是抓到的鮭魚，彩蛋）
  *   'run'      負載高時四腳著地衝刺：側面、頭朝 dir 那一邊，跑步時身體上下起伏、後面揚起塵土
  *   'icon'     圖示用的站姿
  *
@@ -52,6 +52,7 @@ function drawBear(ctx, opts) {
     detail = 'high',
     shadow = true,
     time = 0,
+    holding = null,  // 'eat' 時手上拿的東西：null 是青剛櫟果實，'salmon' 是抓到的鮭魚（彩蛋）
   } = opts
 
   const low = detail === 'low'
@@ -109,7 +110,13 @@ function drawBear(ctx, opts) {
   const chew = pose === 'eat' ? Math.max(0, Math.sin(time * 0.018)) * 1.5 : 0
   drawHead(ctx, { blink, heat, low, pose, look, chew })
   for (const side of [-1, 1]) drawArm(ctx, side, armAngle(pose, side, phase, time), low)
-  if (pose === 'eat') {
+  if (pose === 'eat' && holding === 'salmon' && window.MascotArt && window.MascotArt.salmon) {
+    // 彩蛋：抓到的鮭魚，在手上扭來扭去
+    ctx.save()
+    ctx.translate(0.5, -39 + chew)
+    window.MascotArt.salmon.draw(ctx, { scale: 0.45, pose: 'held', time })
+    ctx.restore()
+  } else if (pose === 'eat') {
     // 雙手捧在嘴巴正前方的果實，跟著咀嚼一起動
     ctx.save()
     ctx.translate(0.5, -47 + chew)

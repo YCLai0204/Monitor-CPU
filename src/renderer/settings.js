@@ -128,6 +128,7 @@ function render(next) {
   for (const box of $$('input[type=checkbox][data-key]')) box.checked = !!c[box.dataset.key]
 
   $('#mascot').value = c.mascot
+  renderSalmonEgg()
 
   const scale = $('#scale')
   if (document.activeElement !== scale) scale.value = String(c.scale)
@@ -163,6 +164,23 @@ function render(next) {
   renderRender(state.render)
   renderMetrics(state.metrics)
 }
+
+/** 彩蛋：鮭魚被黑熊吃掉後留下魚卵，孵化前鮭魚不能選，選單上顯示倒數。 */
+function renderSalmonEgg() {
+  const option = $('#mascot option[value="salmon"]')
+  if (!option) return
+  const egg = state && state.config.salmonEgg
+  const name = (MASCOTS.find((m) => m.id === 'salmon') || {}).name
+  if (!egg) {
+    option.disabled = false
+    option.textContent = name
+    return
+  }
+  const left = Math.max(0, Math.ceil((egg.hatchAt - Date.now()) / 1000))
+  option.disabled = true
+  option.textContent = `${name}（孵化中 ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}）`
+}
+setInterval(renderSalmonEgg, 1000)
 
 const RENDER_NAME = { cpu: '省 GPU（用 CPU 繪圖）', gpu: '用顯示卡繪圖' }
 

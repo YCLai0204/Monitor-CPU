@@ -423,6 +423,7 @@ function isAnimating() {
   const load = clamp(metrics.load || 0, 0, 100)
   if (drag || actor.speed > 3 || load >= 70 || bubbles.length) return true // 70% 以上會冒汗、冒熱氣
   if (eggAnimating()) return true // 頭暈的星星、滾走、甩掉的螯
+  if (feast || (roe && (roe.drop > 0 || roe.hatchT))) return true // 黑熊吃鮭魚、魚卵在沉、在孵化
   if (Math.abs(actor.vx) > 5 || actor.tumble) return true // 被丟出去後在地上滑、還沒翻正
   if (foods.some((f) => f.id === null && !f.landed)) return true // 食物在往下掉
   if (isSwimmer()) {
@@ -459,6 +460,7 @@ function renderKey(now) {
     parts.push(crawlPose(), wallSide(), q(crawl.angle, 30), q(crawl.nx, 10), q(crawl.ny, 10), q(actor.ballK, 40), q(actor.tumble, 30))
   }
   for (const f of drawableFoods()) parts.push(q(f.x, 2), q(f.y, 2))
+  if (roe) parts.push('roe', q(toWX(roe.sx), 2)) // 魚卵出現、消失、視窗換位置時要重畫
   if (foods.length) parts.push(Math.floor(now / 80)) // 食物偶爾會閃一下
   for (const b of bubbles) parts.push(q(b.x, 2), q(b.y, 2))
   if (isAnimating()) parts.push(Math.floor(now / 30)) // 冒汗、咀嚼、塵土、速度線這些跟著時間動
@@ -469,6 +471,14 @@ function step(dt) {
   const load = clamp(metrics.load || 0, 0, 100)
   updateBlink(dt)
   stepEggs(dt)
+  stepRoe(dt)
+  if (feast) {
+    // 黑熊吃鮭魚的劇情：照劇本走，平常的動作先停
+    stepFeast(dt)
+    updateLabel()
+    updateSpeech()
+    return
+  }
   // actor.vx / spin / tumble 只有在工具列上爬的時候用；換了角色或模式就歸零，免得一直判定為「有在動」
   if (isFlyer() || isSwimmer() || crawlFree()) actor.vx = actor.spin = actor.tumble = 0
   if (isSwimmer()) stepSwim(dt, load)
@@ -2312,12 +2322,23 @@ function render(now) {
   const foodSpots = drawableFoods()
   for (const p of foodSpots) boxes.push({ x: p.x - 30 * scale, y: p.y - 40 * scale, w: 60 * scale, h: 46 * scale })
   if (egg.claw) boxes.push({ x: egg.claw.x - 30 * scale, y: egg.claw.y - 30 * scale, w: 60 * scale, h: 60 * scale })
+  if (roe) {
+    const x = toWX(roe.sx)
+    boxes.push({ x: x - (ROE_POOL / 2 + 30) * scale, y: groundY() - 60 * scale, w: (ROE_POOL + 60) * scale, h: 66 * scale })
+  }
+  if (feast) {
+    // 鮭魚的淺水、跳出水面的弧線，一直到黑熊那裡
+    const a = toWX(feast.poolSX)
+    const x1 = Math.min(a, actor.x) - (WATER_WIDTH / 2 + 40) * scale
+    const x2 = Math.max(a, actor.x) + (WATER_WIDTH / 2 + 40) * scale
+    boxes.push({ x: x1, y: groundY() - 220 * scale, w: x2 - x1, h: 228 * scale })
+  }
   if (isSwimmer() && turtle.water > 0.01) {
     // 淺水上岸後會留在原地慢慢退掉，可能已經不在烏龜身邊
     const w = WATER_WIDTH * scale
     boxes.push({ x: turtle.waterX - w / 2 - 4, y: groundY() - waterDepth() - 8 * scale, w: w + 8, h: waterDepth() + 12 * scale })
   }
-  if (isSwimmer() && turtle.particles.length) {
+  if ((isSwimmer() || feast) && turtle.particles.length) {
     // 水花和泡泡可能飛得比較遠，另外框起來
     let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
     for (const p of turtle.particles) {
@@ -2339,6 +2360,8 @@ function render(now) {
     ctx.restore()
   }
   drawLooseClaw(now)
+  drawRoe(now)
+  drawFeast(now)
 
   if (isSwimmer()) {
     renderSwimmer(now, rx, ry)
@@ -2397,8 +2420,9 @@ function render(now) {
   if (bubbles.length && mascotDef().bubbles) drawBubbles(ctx, bubbles, scale)
 
   applyDizzySway(ctx, now)
-  const pose = crawlPose()
+  const pose = bearPoseOverride || crawlPose()
   mascotDef().draw(ctx, {
+    holding: feast && feast.phase === 'eat' ? 'salmon' : null, // 黑熊吃鮭魚（彩蛋）
     scale,
     load,
     pose,
@@ -2798,6 +2822,222 @@ function updateSpeech() {
   }
 }
 
+// ---------------------------------------------------------------- 彩蛋：黑熊吃鮭魚
+
+/**
+ * 正在用櫻花鉤吻鮭的時候換成台灣黑熊（主程序同時記下 salmonEgg）：
+ *   'enter'  鮭魚還在工具列的淺水裡游，黑熊從比較近的那一側衝進來，停在水邊
+ *   'notice' 鮭魚嚇一跳
+ *   'lay'    鮭魚生下一顆魚卵，沉到水底
+ *   'leap'   鮭魚跳出水面想逃，被黑熊接住
+ *   'eat'    黑熊坐下來抱著鮭魚啃，吃完就照常活動
+ * 魚卵留在原地的一小灘水裡（roe），主程序的 salmonEgg 到時間清掉時孵化，鮭魚才能再選。
+ * 位置都用螢幕座標記（sx），換角色時視窗的位置和大小可能會變。劇情進行中不能拖曳。
+ */
+const FEAST_STOP = 180     // 黑熊停在離鮭魚多遠（px，乘上 scale）：淺水旁邊
+const FEAST_RUN = 380      // 黑熊衝過來的速度（px/s，乘上 scale）
+const FEAST_NOTICE_T = 0.6
+const FEAST_LAY_T = 1.0
+const FEAST_LEAP_T = 0.75  // 鮭魚從水裡飛到黑熊手上要多久
+const FEAST_EAT_T = 4.5    // 黑熊抱著鮭魚啃多久
+const FEAST_FISH_DEPTH = 20 // 鮭魚那片淺水的深度（跟 MASCOT_DEFS.salmon 的 waterDepth 一樣）
+const ROE_POOL = 84        // 魚卵那一小灘水多寬（px，乘上 scale）
+const ROE_POOL_DEPTH = 11
+const ROE_SIZE = 1.4       // 魚卵畫大一點，不然在工具列上不容易注意到
+const ROE_DROP = 0.6       // 魚卵沉到水底要多久
+const HATCH_TIME = 3.4     // 孵化的動畫多久（前一半裂開，後一半小魚苗游出來、水退掉）
+
+let feast = null // 劇情進行中：{ phase, t, side, target, poolSX（淺水）, fishSX, fishLift, fishVX, fishVY, fishTilt, fishPhase, fishDir, water }
+let roe = null   // 留在工具列上的魚卵：{ sx, drop（還在往下沉的剩餘時間）, hatchT（孵化動畫進行到幾秒，0 是還沒開始）}
+
+const toWX = (sx) => sx - winOrigin.x
+
+function startFeast(fishSX) {
+  const s = config.scale
+  const fishX = toWX(fishSX)
+  // 黑熊從比較近的那一側衝進來；那一側水邊站不下的話換另一側
+  let side = fishX < (cur.left + cur.right) / 2 ? -1 : 1
+  const m = halfW() + 6
+  const stopAt = (sd) => fishX + sd * FEAST_STOP * s
+  if (stopAt(side) < cur.left + m || stopAt(side) > cur.right - m) side = -side
+  actor.x = side < 0 ? cur.left - halfW() : cur.right + halfW()
+  actor.lift = 0
+  actor.vy = actor.vx = actor.spin = actor.tumble = 0
+  actor.dir = -side
+  actor.curl = 0
+  crawl.mode = 'walk'
+  crawl.nx = 0
+  crawl.ny = -1
+  crawl.angle = 0
+  feast = {
+    phase: 'enter', t: 0, side, target: clamp(stopAt(side), cur.left + m, cur.right - m),
+    poolSX: fishSX, fishSX, fishLift: 0, fishVX: 0, fishVY: 0, fishTilt: 0, fishPhase: 0, fishDir: side, water: 1,
+  }
+  bearPoseOverride = 'run'
+}
+
+let bearPoseOverride = null // 劇情進行中黑熊的姿勢
+
+function stepFeast(dt) {
+  const f = feast
+  const s = config.scale
+  f.t += dt
+  f.fishPhase += dt * (f.phase === 'leap' ? 14 : f.phase === 'notice' ? 9 : 4)
+  stepParticles(dt)
+  const fishX = toWX(f.fishSX)
+
+  if (f.phase === 'enter') {
+    // 黑熊四腳衝過來
+    actor.speed = FEAST_RUN * s
+    const dx = f.target - actor.x
+    const step = Math.min(Math.abs(dx), actor.speed * dt)
+    actor.x += Math.sign(dx) * step
+    actor.dir = Math.sign(dx) || actor.dir
+    actor.phase += (step / (strideOf() * s)) * Math.PI * 2
+    if (Math.abs(f.target - actor.x) < 0.5) {
+      actor.x = f.target
+      actor.dir = f.side < 0 ? 1 : -1 // 面向鮭魚
+      actor.speed = 0
+      f.phase = 'notice'
+      f.t = 0
+      bearPoseOverride = 'walk'
+      splash(fishX, groundY() - FEAST_FISH_DEPTH * s, 8, 0.8)
+    }
+  } else if (f.phase === 'notice') {
+    if (f.t >= FEAST_NOTICE_T) {
+      f.phase = 'lay'
+      f.t = 0
+      // 生下一顆魚卵，慢慢沉到水底
+      roe = { sx: f.fishSX, drop: ROE_DROP, hatchT: 0 }
+      window.crabAPI.salmonEggAt(f.fishSX)
+    }
+  } else if (f.phase === 'lay') {
+    if (f.t >= FEAST_LAY_T) {
+      // 跳出水面想逃：照拋物線飛到黑熊手上（重力跟平常跳出水面一樣）
+      f.phase = 'leap'
+      f.t = 0
+      const g = LEAP_GRAVITY * s
+      const tx = actor.x + actor.dir * 6 * s
+      const rise = 42 * s // 黑熊坐下來抱著的高度
+      f.fishVX = (tx - fishX) / FEAST_LEAP_T
+      f.fishVY = -(rise + 0.5 * g * FEAST_LEAP_T * FEAST_LEAP_T) / FEAST_LEAP_T
+      f.fishDir = f.fishVX >= 0 ? 1 : -1
+      splash(fishX, groundY() - FEAST_FISH_DEPTH * s, 12, 1)
+    }
+  } else if (f.phase === 'leap') {
+    const g = LEAP_GRAVITY * s
+    f.fishVY += g * dt
+    f.fishSX += f.fishVX * dt
+    f.fishLift -= f.fishVY * dt
+    f.fishTilt = clamp(Math.atan2(f.fishVY, Math.abs(f.fishVX)), -1.2, 1.2)
+    f.water = Math.max(0, f.water - dt * 1.2)
+    if (f.t >= FEAST_LEAP_T) {
+      // 接住了：坐下來抱著啃
+      f.phase = 'eat'
+      f.t = 0
+      bearPoseOverride = 'eat'
+    }
+  } else if (f.phase === 'eat') {
+    f.water = Math.max(0, f.water - dt * 1.2)
+    if (f.t >= FEAST_EAT_T) endFeast()
+  }
+  updateBlink(dt)
+}
+
+/** 劇情結束（或中途換了角色）：魚卵還沒生的話直接放在鮭魚那裡，黑熊照常活動。 */
+function endFeast() {
+  if (!feast) return
+  if (!roe) {
+    roe = { sx: feast.fishSX, drop: 0, hatchT: 0 }
+    window.crabAPI.salmonEggAt(feast.fishSX)
+  }
+  feast = null
+  bearPoseOverride = null
+  actor.speed = 0
+  actor.pause = 1
+  if (crawlFree()) crawlFall(0, 0) // 整個畫面模式：從工具列上接回原本的爬行
+}
+
+/** 主程序的 salmonEgg 跟畫面上的魚卵對齊：有魚卵但還沒畫（剛開程式）就放上去；魚卵被清掉了就開始孵化。 */
+function syncRoe() {
+  const egg = config.salmonEgg
+  if (egg && !roe && !feast) {
+    const sx = Number.isFinite(egg.x) ? egg.x : winOrigin.x + (cur.left + cur.right) / 2
+    roe = { sx, drop: 0, hatchT: 0 }
+  } else if (!egg && roe && !roe.hatchT) {
+    roe.hatchT = 0.001
+  }
+}
+
+function stepRoe(dt) {
+  if (!roe) return
+  if (roe.drop > 0) roe.drop = Math.max(0, roe.drop - dt)
+  if (!roe.hatchT) return
+  const before = roe.hatchT
+  roe.hatchT += dt
+  if (before < HATCH_TIME / 2 && roe.hatchT >= HATCH_TIME / 2) {
+    // 裂開了，小魚苗游出來
+    const s = config.scale
+    splash(toWX(roe.sx), groundY() - ROE_POOL_DEPTH * s, 5, 0.5)
+    egg.speechText = '櫻花鉤吻鮭孵化了！又可以選牠了'
+    egg.speechT = SPEECH_TIME
+  }
+  if (roe.hatchT >= HATCH_TIME) roe = null
+}
+
+/** 魚卵和那一小灘水；孵化時魚卵裂開、小魚苗游出來，水慢慢退掉。 */
+function drawRoe(now) {
+  if (!roe) return
+  const s = config.scale
+  const x = toWX(roe.sx)
+  const half = HATCH_TIME / 2
+  const fade = roe.hatchT > half ? Math.max(0, 1 - (roe.hatchT - half) / half) : 1
+  const water = {
+    x, width: ROE_POOL * s, surfaceY: groundY() - ROE_POOL_DEPTH * s, groundY: groundY(),
+    amount: fade, time: roe.hatchT ? now : 0, scale: s, // 平常水是靜止的，不用一直重畫
+  }
+  ART.turtle.drawWaterBack(ctx, water)
+  if (roe.hatchT < half || !roe.hatchT) {
+    ctx.save()
+    ctx.translate(x, groundY() - 1 * s - (roe.drop / ROE_DROP) * 12 * s) // 從鮭魚肚子的高度沉下去
+    ART.salmon.drawEgg(ctx, { scale: s * ROE_SIZE, time: now, crack: roe.hatchT ? roe.hatchT / half : 0 })
+    ctx.restore()
+  } else {
+    // 小魚苗從卵裡游出來，往上浮一點、扭來扭去，跟著水一起淡掉
+    const u = (roe.hatchT - half) / half
+    ctx.save()
+    ctx.globalAlpha = fade
+    ctx.translate(x + Math.sin(u * 9) * 6 * s, groundY() - 2 * s - u * 4 * s)
+    ART.salmon.draw(ctx, { scale: 0.32 * s, pose: 'swim', phase: now * 0.02, dir: Math.sin(u * 4) >= 0 ? 1 : -1 })
+    ctx.restore()
+  }
+  ART.turtle.drawWaterFront(ctx, water)
+}
+
+/** 劇情裡的鮭魚和牠的淺水（黑熊另外照平常的方式畫，疊在最上面）。 */
+function drawFeast(now) {
+  const f = feast
+  if (!f) return
+  const s = config.scale
+  const water = {
+    x: toWX(f.poolSX),
+    width: WATER_WIDTH * s, surfaceY: groundY() - FEAST_FISH_DEPTH * s, groundY: groundY(),
+    amount: f.water, time: now, scale: s,
+  }
+  ART.turtle.drawWaterBack(ctx, water)
+  if (f.phase !== 'eat') {
+    ctx.save()
+    ctx.translate(toWX(f.fishSX), groundY() - f.fishLift)
+    ART.salmon.draw(ctx, {
+      scale: s, dir: f.fishDir, phase: f.fishPhase, pose: f.phase === 'leap' ? 'leap' : 'swim',
+      tilt: f.fishTilt, flinch: f.phase === 'notice' || f.phase === 'lay' ? 1 : 0, blink: 0, time: now,
+    })
+    ctx.restore()
+  }
+  ART.turtle.drawWaterFront(ctx, water)
+  ART.turtle.drawParticles(ctx, turtle.particles, s)
+}
+
 // ---------------------------------------------------------------- 滑鼠
 
 // 視窗預設整片穿透（工具列和其他視窗才點得到），只有游標壓在吉祥物身上時才短暫接管。
@@ -2835,6 +3075,7 @@ function nearEdge(px, py) {
 
 window.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || !overMascot(e.clientX, e.clientY)) return
+  if (feast) return // 黑熊吃鮭魚的劇情中不能抓
   drag = {
     startX: e.clientX,
     startY: e.clientY,
@@ -2990,6 +3231,7 @@ window.addEventListener('click', (e) => {
     return
   }
   if (!overMascot(e.clientX, e.clientY)) return
+  if (feast) return // 黑熊吃鮭魚的劇情中不理會點擊
   // 連點的話取消雙擊排好的「打開設定」，不然點一點設定視窗就跳出來了
   if (settingsTimer) {
     clearTimeout(settingsTimer)
@@ -3083,6 +3325,7 @@ window.crabAPI.onConfig((data) => {
   const wasFlyer = isFlyer()
   const wasSwimmer = isSwimmer()
   const wasMascot = config.mascot
+  const fishSX = actor.x + winOrigin.x // 換成黑熊之前鮭魚在哪（螢幕座標），彩蛋要用
   config = { ...config, ...data }
   // 吉祥物被隱藏時主程序已經把穿透設回去了，這邊的狀態要跟著重置
   if (config.showCrab === false) {
@@ -3105,6 +3348,10 @@ window.crabAPI.onConfig((data) => {
     turtle.tilt = 0
     turtle.particles.length = 0
   }
+  // 彩蛋：正在用鮭魚的時候換成黑熊（主程序記下了魚卵）→ 黑熊吃鮭魚；劇情中換成別的就直接結束
+  if (wasMascot === 'salmon' && config.mascot === 'bear' && config.salmonEgg && !feast) startFeast(fishSX)
+  else if (feast && config.mascot !== 'bear') endFeast()
+  syncRoe()
   resize()
 })
 window.crabAPI.onLayout(applyLayout)
@@ -3117,6 +3364,7 @@ window.crabAPI.getLayout().then((l) => { if (l) applyLayout(l) }).catch(() => {}
 window.crabAPI.getConfig().then((c) => {
   config = { ...config, ...c }
   if (isFlyer()) landOn(groundPerch(), actor.x)
+  syncRoe() // 上次還沒孵化的魚卵
 }).catch(() => {})
 
 function clamp(v, lo, hi) {

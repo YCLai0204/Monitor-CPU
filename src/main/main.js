@@ -64,6 +64,7 @@ const DEFAULTS = {
   showTray: true,         // 小圖示直接顯示在時鐘旁邊；關掉的話收進 ^ 裡面（圖示一直都在，才找得到設定）
   renderMode: 'auto',     // 繪圖方式：'auto' 依核心數自動選 | 'cpu' 省 GPU（關掉硬體加速）| 'gpu' 用顯示卡；重新啟動才生效
   promotedTrayPaths: [],  // 已經自動設成「直接顯示在右下角」過的 exe 路徑
+  salmonEgg: null,        // 彩蛋：黑熊吃掉鮭魚後留下的魚卵 { hatchAt: 孵化時間(ms), x: 螢幕座標 | null }，孵化前不能選鮭魚
 }
 
 // 有哪些吉祥物。新增動物時加在這裡，畫法與動作寫在 renderer，設定視窗的說明寫在 settings.js 的 MASCOTS
@@ -77,7 +78,7 @@ const STATIC_TRAY_MASCOTS = MASCOTS.filter((id) => id !== 'crab' && id !== 'bird
 const isBool = (v) => typeof v === 'boolean'
 const SETTING_RULES = {
   source: (v) => ['cpu', 'gpu', 'max'].includes(v),
-  mascot: (v) => MASCOTS.includes(v),
+  mascot: (v) => MASCOTS.includes(v) && !(v === 'salmon' && config.salmonEgg), // 魚卵還沒孵化不能選鮭魚
   roamScreen: isBool,
   renderMode: (v) => ['auto', 'cpu', 'gpu'].includes(v),
   scale: (v) => typeof v === 'number' && v >= 0.5 && v <= 2,
@@ -149,6 +150,8 @@ function loadConfig() {
     config = { ...DEFAULTS }
   }
   if (!MASCOTS.includes(config.mascot)) config.mascot = DEFAULTS.mascot
+  const egg = config.salmonEgg
+  if (!egg || typeof egg.hatchAt !== 'number' || egg.hatchAt <= Date.now()) config.salmonEgg = null // 關著的時候孵化了
 }
 
 function saveConfig() {
@@ -631,6 +634,21 @@ function applyTrayVisibility() {
   syncTrayPromotion(0, true)
 }
 
+const SALMON_HATCH_MS = 10 * 60 * 1000 // 魚卵多久孵化
+let hatchTimer = null
+
+/** 魚卵到時間就孵化（清掉 salmonEgg），吉祥物視窗會播孵化的動畫、設定視窗的鮭魚又可以選。 */
+function scheduleSalmonHatch() {
+  clearTimeout(hatchTimer)
+  hatchTimer = null
+  if (!config.salmonEgg) return
+  hatchTimer = setTimeout(() => {
+    hatchTimer = null
+    if (config.salmonEgg && config.salmonEgg.hatchAt <= Date.now() + 50) update({ salmonEgg: null })
+    else scheduleSalmonHatch() // 電腦睡眠之類的讓計時器提早或延後了，重新算
+  }, Math.max(0, config.salmonEgg.hatchAt - Date.now()))
+}
+
 /**
  * 所有設定變更都從這裡進來（設定視窗、再開一次 exe）。
  * 系統匣圖示一直都在（「在右下角顯示小圖示」關掉只是收進 ^ 裡），所以吉祥物和小圖示可以都關掉；
@@ -643,7 +661,12 @@ function applySettings(patch) {
   }
   if (!Object.keys(clean).length) return false
 
+  // 彩蛋：正在用鮭魚的時候換成黑熊 → 黑熊把鮭魚吃掉，鮭魚留下一顆魚卵，孵化前不能再選鮭魚
+  if (clean.mascot === 'bear' && config.mascot === 'salmon') {
+    clean.salmonEgg = { hatchAt: Date.now() + SALMON_HATCH_MS, x: null }
+  }
   update(clean)
+  if ('salmonEgg' in clean) scheduleSalmonHatch()
   if ('showCrab' in clean) applyCrabVisibility()
   if ('showTray' in clean) applyTrayVisibility()
   if (('displayId' in clean || 'mascot' in clean || 'roamScreen' in clean) && config.showCrab) {
@@ -786,6 +809,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     loadConfig()
+    scheduleSalmonHatch()
     applyLoginItem()
     createWindow()
     createTray() // 一直都在：「在右下角顯示小圖示」關掉時是收進 ^ 裡面
@@ -875,9 +899,31 @@ if (!app.requestSingleInstanceLock()) {
     app.relaunch(portable ? { execPath: portable, args: [] } : undefined)
     app.quit()
   })
-  // 彩蛋的測試按鈕（開發時才有）：轉給吉祥物視窗
+  // 吉祥物視窗告訴我們魚卵生在哪裡（螢幕座標），重新開程式時才放得回原位
+  ipcMain.on('salmon-egg-x', (_e, x) => {
+    if (config.salmonEgg && Number.isFinite(x)) update({ salmonEgg: { ...config.salmonEgg, x } })
+  })
+  // 彩蛋的測試按鈕（開發時才有）
   ipcMain.on('settings:test-egg', (_e, name) => {
-    if (app.isPackaged || !['dizzy', 'shake', 'rest'].includes(name)) return
+    if (app.isPackaged || !['dizzy', 'shake', 'rest', 'feast', 'hatch'].includes(name)) return
+    if (name === 'feast') {
+      // 黑熊吃鮭魚：先換成鮭魚（還有魚卵的話先讓它孵化），過一下再換成黑熊
+      if (config.salmonEgg) {
+        update({ salmonEgg: null })
+        scheduleSalmonHatch()
+      }
+      applySettings({ mascot: 'salmon' })
+      setTimeout(() => applySettings({ mascot: 'bear' }), 2500)
+      return
+    }
+    if (name === 'hatch') {
+      // 魚卵 2 秒後孵化
+      if (config.salmonEgg) {
+        update({ salmonEgg: { ...config.salmonEgg, hatchAt: Date.now() + 2000 } })
+        scheduleSalmonHatch()
+      }
+      return
+    }
     if (win && !win.isDestroyed()) win.webContents.send('egg', name)
   })
 }

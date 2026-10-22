@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('crabAPI', {
   onPerches: (cb) => ipcRenderer.on('perches', (_e, data) => cb(data)),
   onCursor: (cb) => ipcRenderer.on('cursor', (_e, data) => cb(data)),
   onEgg: (cb) => ipcRenderer.on('egg', (_e, name) => cb(name)),
+  salmonEggAt: (screenX) => ipcRenderer.send('salmon-egg-x', screenX),
   setExpanded: (value) => ipcRenderer.send('set-expanded', value),
   dropOnDisplay: (id) => ipcRenderer.send('drop-on-display', id),
   getLayout: () => ipcRenderer.invoke('get-layout'),

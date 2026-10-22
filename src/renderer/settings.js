@@ -3,13 +3,21 @@
 const api = window.settingsAPI
 let state = null
 
+/** 角色下拉選單的分區，照這個順序排。 */
+const GROUPS = [
+  { id: 'sky', name: '天上' },
+  { id: 'water', name: '水裡' },
+  { id: 'land', name: '地上' },
+]
+
 /**
  * 有哪些吉祥物，以及設定視窗上的說明。新增動物時在這裡加一筆（主程序的 MASCOTS 也要加），
- * 沒寫的說明會用 DEFAULT_TEXT。
+ * group 是放在下拉選單的哪一區（GROUPS），沒寫的說明會用 DEFAULT_TEXT。
  */
 const MASCOTS = [
   {
     id: 'crab',
+    group: 'land',
     name: '螃蟹',
     roamOn: '沿著螢幕四周爬：爬上牆壁、倒掛在天花板上',
     roamOff: '關掉的話只在底下的工具列上橫著走',
@@ -18,6 +26,7 @@ const MASCOTS = [
   },
   {
     id: 'bird',
+    group: 'sky',
     name: '小鳥',
     roamOn: '在畫面上飛來飛去，累了就找地方停',
     roamOff: '關掉的話只在底下的工具列上走走跳跳',
@@ -26,6 +35,7 @@ const MASCOTS = [
   },
   {
     id: 'bear',
+    group: 'land',
     name: '台灣黑熊',
     roamOn: '沿著螢幕四周走：扒著牆往上爬，但不會倒掛',
     roamOff: '關掉的話只在底下的工具列上走',
@@ -34,6 +44,7 @@ const MASCOTS = [
   },
   {
     id: 'spoonbill',
+    group: 'sky',
     name: '黑面琵鷺',
     roamOn: '在畫面上飛來飛去，累了就找地方停',
     roamOff: '關掉的話只在底下的工具列上走走、用湯匙嘴掃來掃去',
@@ -42,6 +53,7 @@ const MASCOTS = [
   },
   {
     id: 'turtle',
+    group: 'water',
     name: '綠蠵龜',
     roamOn: '把整個畫面當成海慢慢游，累了回到工具列的淺水裡休息',
     roamOff: '關掉的話在工具列上爬，偶爾下到淺水裡游',
@@ -51,6 +63,7 @@ const MASCOTS = [
   },
   {
     id: 'pangolin',
+    group: 'land',
     name: '台灣穿山甲',
     roamOn: '沿著螢幕四周走：用爪子扒著牆往上爬，但不會倒掛',
     roamOff: '關掉的話只在底下的工具列上走',
@@ -92,6 +105,8 @@ function render(next) {
   }
 
   for (const box of $$('input[type=checkbox][data-key]')) box.checked = !!c[box.dataset.key]
+
+  $('#mascot').value = c.mascot
 
   const scale = $('#scale')
   if (document.activeElement !== scale) scale.value = String(c.scale)
@@ -177,16 +192,21 @@ function meter(id, load, temp) {
 
 // ---------------------------------------------------------------- 事件
 
-// 角色按鈕由 MASCOTS 產生，要在綁定點擊事件之前建好
-$('#mascots').replaceChildren(
-  ...MASCOTS.map((m) => {
-    const b = document.createElement('button')
-    b.type = 'button'
-    b.dataset.value = m.id
-    b.textContent = m.name
-    return b
-  })
+// 角色下拉選單由 MASCOTS 產生，依 GROUPS 分成天上、水裡、地上幾區
+$('#mascot').replaceChildren(
+  ...GROUPS.map((g) => {
+    const group = document.createElement('optgroup')
+    group.label = g.name
+    for (const m of MASCOTS.filter((m) => m.group === g.id)) {
+      const o = document.createElement('option')
+      o.value = m.id
+      o.textContent = m.name
+      group.append(o)
+    }
+    return group
+  }).filter((group) => group.children.length)
 )
+$('#mascot').addEventListener('change', (e) => change({ mascot: e.target.value }))
 
 for (const seg of $$('[data-key].seg, [data-key].choices')) {
   seg.addEventListener('click', (e) => {

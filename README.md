@@ -18,7 +18,7 @@
 
 1. 寫一支畫法（例如 `src/renderer/bear.js`），掛到 `window.MascotArt`，並在 `index.html` 載入
 2. 在 `src/renderer/app.js` 的 `MASCOT_DEFS` 加一筆：選用哪一套動作（`crawl` 像螃蟹爬、`fly` 像小鳥飛、`swim` 像綠蠵龜游），再依需要打開 `climber`（不倒掛、從視窗側邊爬上去）、`food`（偷偷放食物）、`foodReach`（站在食物旁邊吃，食物留在原地）、`run`（負載高時衝刺）、`curl`（被戳到捲成球）等選項
-3. 在 `src/main/main.js` 與 `src/renderer/settings.js` 的 `MASCOTS` 各加一筆
+3. 在 `src/main/main.js` 與 `src/renderer/settings.js` 的 `MASCOTS` 各加一筆；settings.js 那筆的 `group` 決定牠在角色下拉選單的哪一區（`sky` 天上、`water` 水裡、`land` 地上）
 
 這兩個活動範圍的開關不用另外做。
 

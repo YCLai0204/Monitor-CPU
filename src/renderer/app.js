@@ -114,6 +114,9 @@ const actor = {
   x: viewW / 2,
   lift: 0,                 // 腳底離地的高度（被拖起、下墜、小鳥飛行或停在視窗上時 > 0）
   vy: 0,                   // 螃蟹下墜速度，向下為正
+  vx: 0,                   // 被丟出去的水平速度（在工具列上爬的時候用；落地後滑一段慢慢停）
+  spin: 0,                 // 被丟出去時在空中翻轉的角速度（rad/s）
+  tumble: 0,               // 在空中翻到的角度，落地後慢慢轉正
   dir: 1,
   speed: 0,
   phase: 0,
@@ -135,6 +138,7 @@ const bird = {
   perch: { kind: 'ground' }, // { kind: 'ground' | 'window', id, wx, y, x1, x2 }
   vx: 0,
   vy: 0,
+  thrownT: 0,              // 剛被丟出去、還沒回過神的剩餘時間：這段時間只照拋物線飛，不轉向
   target: null,            // { x, y, perch } 下一個要飛去的點；perch 不是 null 就是要降落
   route: 0,                // 降落前還要先繞幾個點
   flightT: 0,
@@ -182,6 +186,7 @@ const crawl = {
   stayT: 0,                // 在視窗上待多久
   leaving: false,          // 待夠了，等爬到側邊或底部就跳下去
   boost: 0,                // 被戳到後暴衝的剩餘時間
+  spin: 0,                 // 被丟出去時在空中翻轉的角速度（rad/s），慢慢減到 0 再翻正
   // 以下是攀爬型（黑熊）才用的
   climbLimit: 0.45,        // 這次牆最多爬到螢幕高度的幾成
   peek: false,             // 停在牆上東張西望
@@ -418,6 +423,7 @@ function isAnimating() {
   const load = clamp(metrics.load || 0, 0, 100)
   if (drag || actor.speed > 3 || load >= 70 || bubbles.length) return true // 70% 以上會冒汗、冒熱氣
   if (eggAnimating()) return true // 頭暈的星星、滾走、甩掉的螯
+  if (Math.abs(actor.vx) > 5 || actor.tumble) return true // 被丟出去後在地上滑、還沒翻正
   if (foods.some((f) => f.id === null && !f.landed)) return true // 食物在往下掉
   if (isSwimmer()) {
     // 在水裡時波浪一直在動；在岸上停著就不用
@@ -450,7 +456,7 @@ function renderKey(now) {
     parts.push(bird.mode, q(bird.flap, 12), q(bird.spread, 20), q(bird.tilt, 30), q(bird.look, 20), q(bird.headTilt, 20),
       q(bird.peck, 20), q(bird.stretch, 20), q(bird.fluff, 20), q(bird.squash, 20), q(bird.hopY, 2), q(bird.loop, 20), q(bird.tailSwing, 20))
   } else {
-    parts.push(crawlPose(), wallSide(), q(crawl.angle, 30), q(crawl.nx, 10), q(crawl.ny, 10), q(actor.ballK, 40))
+    parts.push(crawlPose(), wallSide(), q(crawl.angle, 30), q(crawl.nx, 10), q(crawl.ny, 10), q(actor.ballK, 40), q(actor.tumble, 30))
   }
   for (const f of drawableFoods()) parts.push(q(f.x, 2), q(f.y, 2))
   if (foods.length) parts.push(Math.floor(now / 80)) // 食物偶爾會閃一下
@@ -463,6 +469,8 @@ function step(dt) {
   const load = clamp(metrics.load || 0, 0, 100)
   updateBlink(dt)
   stepEggs(dt)
+  // actor.vx / spin / tumble 只有在工具列上爬的時候用；換了角色或模式就歸零，免得一直判定為「有在動」
+  if (isFlyer() || isSwimmer() || crawlFree()) actor.vx = actor.spin = actor.tumble = 0
   if (isSwimmer()) stepSwim(dt, load)
   else if (isFlyer()) stepFly(dt, load)
   else {
@@ -512,19 +520,40 @@ function stepCrawl(dt, load) {
   if (actor.lift > 0) {
     actor.vy += GRAVITY * dt
     actor.lift -= actor.vy * dt
+    // 被丟出去的水平速度：拋物線飛出去，撞到螢幕兩側或頂端就彈回來
+    actor.x += actor.vx * dt
+    if (actor.x < cur.left + margin) { actor.x = cur.left + margin; actor.vx = Math.abs(actor.vx) * 0.5; actor.spin *= -0.6 }
+    if (actor.x > cur.right - margin) { actor.x = cur.right - margin; actor.vx = -Math.abs(actor.vx) * 0.5; actor.spin *= -0.6 }
+    const maxLift = groundY() - cur.top - topH()
+    if (actor.lift > maxLift) { actor.lift = maxLift; actor.vy = Math.abs(actor.vy) * 0.3 }
+    actor.tumble += actor.spin * dt
     actor.speed = 0
     actor.phase += dt * 16
     if (actor.lift <= 0) {
       actor.lift = 0
-      // 落地時小彈一下，速度太小就直接站穩
+      // 落地時小彈一下，速度太小就直接站穩；水平速度被地面磨掉一些，剩下的滑一段
       actor.vy = actor.vy > 500 ? -actor.vy * 0.22 : 0
       if (actor.vy < 0) actor.lift = 0.01
+      actor.vx *= 0.6
+      actor.spin *= 0.4
       actor.pause = 0.5
       // 完全站穩後，把視窗從「涵蓋所有螢幕」縮回這一台螢幕的底部，之後就固定在這台移動
       if (actor.lift === 0 && expanded) dropOnDisplay(cur.id)
     }
     return
   }
+  // 落地後翻正；還有被丟出去的水平速度就在地上滑一段，慢慢停下來
+  actor.tumble = approachAngle(actor.tumble, 0, dt * 8)
+  actor.spin = 0
+  if (Math.abs(actor.vx) > 5) {
+    actor.x += actor.vx * dt
+    actor.vx = approach(actor.vx, 0, 1600 * scale * dt)
+    if (actor.x < cur.left + margin) { actor.x = cur.left + margin; actor.vx = Math.abs(actor.vx) * 0.5 }
+    if (actor.x > cur.right - margin) { actor.x = cur.right - margin; actor.vx = -Math.abs(actor.vx) * 0.5 }
+    actor.speed = 0
+    return
+  }
+  actor.vx = 0
   if (rolling()) {
     // 連點後捲成球往反方向滾走（彩蛋），碰到螢幕邊就彈回來
     actor.speed = approach(actor.speed, ROLL_SPEED * scale, dt * 1200 * scale)
@@ -761,6 +790,7 @@ function crawlFall(vx, vy) {
   crawl.mode = 'fall'
   crawl.vx = vx
   crawl.vy = vy
+  crawl.spin = 0
   resetCrawlPlans()
 }
 
@@ -1410,7 +1440,14 @@ function stepCrawlFall(dt) {
   if (x < cur.left + m) { x = cur.left + m; crawl.vx = Math.abs(crawl.vx) * 0.4 }
   if (x > cur.right - m) { x = cur.right - m; crawl.vx = -Math.abs(crawl.vx) * 0.4 }
   if (y < cur.top + topH()) { y = cur.top + topH(); crawl.vy = Math.max(0, crawl.vy) }
-  crawl.angle = approachAngle(crawl.angle, 0, dt * 9) // 在空中翻正
+  if (Math.abs(crawl.spin) > 1.5) {
+    // 被丟出去：在空中翻滾，越轉越慢
+    crawl.angle += crawl.spin * dt
+    crawl.spin = approach(crawl.spin, 0, dt * 5)
+  } else {
+    crawl.spin = 0
+    crawl.angle = approachAngle(crawl.angle, 0, dt * 9) // 在空中翻正
+  }
   actor.speed = 0
   actor.phase += dt * 16
 
@@ -1495,6 +1532,7 @@ function landOn(perch, x) {
   bird.target = null
   bird.vx = 0
   bird.vy = 0
+  bird.thrownT = 0
   bird.loop = -1
   bird.hopY = 0
   bird.hopV = 0
@@ -1742,9 +1780,15 @@ function stepFlying(dt, e, hyper) {
     dvx += (-dy / dist) * wobble
     dvy += (dx / dist) * wobble
   }
-  const steer = 2.2 + 2.5 * e + 3 * hyper
-  bird.vx += (dvx - bird.vx) * Math.min(1, dt * steer)
-  bird.vy += (dvy - bird.vy) * Math.min(1, dt * steer)
+  if (bird.thrownT > 0) {
+    // 剛被丟出去：還沒回過神，先照拋物線飛一小段
+    bird.thrownT -= dt
+    bird.vy += GRAVITY * 0.7 * dt
+  } else {
+    const steer = 2.2 + 2.5 * e + 3 * hyper
+    bird.vx += (dvx - bird.vx) * Math.min(1, dt * steer)
+    bird.vy += (dvy - bird.vy) * Math.min(1, dt * steer)
+  }
 
   actor.x += bird.vx * dt
   y += bird.vy * dt
@@ -1962,6 +2006,13 @@ function stepSwim(dt, load) {
     case 'fall': {
       actor.vy += GRAVITY * dt
       actor.lift -= actor.vy * dt
+      // 被丟出去的水平速度：拋物線落進水裡，撞到螢幕兩側或頂端就彈回來
+      actor.x += turtle.vx * dt
+      if (actor.x < cur.left + m) { actor.x = cur.left + m; turtle.vx = Math.abs(turtle.vx) * 0.5 }
+      if (actor.x > cur.right - m) { actor.x = cur.right - m; turtle.vx = -Math.abs(turtle.vx) * 0.5 }
+      const maxLift = groundY() - cur.top - topH()
+      if (actor.lift > maxLift) { actor.lift = maxLift; actor.vy = Math.abs(actor.vy) * 0.3 }
+      if (Math.abs(turtle.vx) > 15) actor.dir = turtle.vx > 0 ? 1 : -1
       turtle.tilt = approach(turtle.tilt, 0, dt * 4)
       actor.phase += dt * 10
       if (actor.lift <= 0) {
@@ -2336,15 +2387,22 @@ function render(now) {
     ctx.translate(c.x - rx, c.y - ry)
     ctx.rotate(crawl.angle)
     ctx.translate(0, topH() * 0.5)
+  } else if (actor.tumble) {
+    // 在工具列模式被丟出去：繞著身體中心在空中翻滾
+    ctx.translate(0, -topH() * 0.5)
+    ctx.rotate(actor.tumble)
+    ctx.translate(0, topH() * 0.5)
   }
 
   if (bubbles.length && mascotDef().bubbles) drawBubbles(ctx, bubbles, scale)
 
   applyDizzySway(ctx, now)
+  const pose = crawlPose()
   mascotDef().draw(ctx, {
     scale,
     load,
-    pose: crawlPose(),
+    pose,
+    shadow: pose !== 'fall' && pose !== 'held', // 在空中、被抓著時沒有影子（不然會跟著身體一起翻）
     curl: mascotDef().curl ? actor.ballK : undefined,
     wall: wallSide(),
     look: actor.look,
@@ -2781,9 +2839,34 @@ window.addEventListener('mousedown', (e) => {
     dx: crawlFree() ? 0 : e.clientX - actor.x,
     dy: crawlFree() ? -topH() * 0.5 : e.clientY - feetY(),
     moved: false,
+    trail: [],             // 最近的游標位置 { x, y, t }，放開時算丟出去的速度
   }
   resetShake()
 })
+
+const THROW_WINDOW_MS = 100 // 用放開前多久的游標軌跡算丟出去的速度
+const THROW_MIN = 150       // 比這個慢（px/s）就當成輕輕放下
+const THROW_MAX = 2800      // 丟出去的速度上限（px/s），甩太大力也不會飛出天際
+
+/** 放開時游標的速度（px/s）：看最後 0.1 秒的軌跡；放開前已經停住的話就是 0。 */
+function throwVelocity(trail) {
+  const now = performance.now()
+  const recent = trail.filter((p) => now - p.t <= THROW_WINDOW_MS)
+  if (recent.length < 2) return { vx: 0, vy: 0 }
+  const a = recent[0]
+  const b = recent[recent.length - 1]
+  const dt = (b.t - a.t) / 1000
+  if (dt < 0.012) return { vx: 0, vy: 0 }
+  let vx = (b.x - a.x) / dt
+  let vy = (b.y - a.y) / dt
+  const v = Math.hypot(vx, vy)
+  if (v < THROW_MIN) return { vx: 0, vy: 0 }
+  if (v > THROW_MAX) {
+    vx *= THROW_MAX / v
+    vy *= THROW_MAX / v
+  }
+  return { vx, vy }
+}
 
 window.addEventListener('mousemove', (e) => {
   lastMouse = { x: e.clientX, y: e.clientY }
@@ -2803,7 +2886,13 @@ window.addEventListener('mousemove', (e) => {
     // 所以視窗本來就蓋滿整台螢幕時，拖到螢幕邊緣（要往別台去）才展開
     if (drag.moved && !expanded && (!freeLayout || nearEdge(e.clientX, e.clientY))) setExpanded(true)
     // 視窗正在展開：游標座標已經是新視窗的，但版面還是舊的，算出來的位置會跳；等版面到了再跟上
-    if (drag.moved) trackShake(e.clientX) // 拖著用力甩（彩蛋）
+    if (drag.moved) {
+      trackShake(e.clientX) // 拖著用力甩（彩蛋）
+      const now = performance.now()
+      // 用螢幕座標：拖曳中視窗可能展開成涵蓋所有螢幕，視窗座標會在那一下跳掉，算出來的速度會暴衝
+      drag.trail.push({ x: e.screenX, y: e.screenY, t: now })
+      while (drag.trail.length > 2 && now - drag.trail[0].t > THROW_WINDOW_MS * 2) drag.trail.shift()
+    }
     if (drag.moved && !layoutPending) {
       const margin = halfW() + 6
       const x = clamp(e.clientX - drag.dx, margin, viewW - margin)
@@ -2824,34 +2913,43 @@ window.addEventListener('mouseup', (e) => {
   if (!drag) return
   suppressClick = drag.moved
   const moved = drag.moved
+  const v = throwVelocity(drag.trail)
   drag = null
   if (!moved) return
   if (egg.shaken) shakeOff()
   // 落在螢幕邊緣或縫隙時，收進所在螢幕的範圍內
   const margin = halfW() + 6
   actor.x = clamp(actor.x, cur.left + margin, cur.right - margin)
+  // 丟出去：帶著放開時游標的速度，照拋物線飛；往上甩的話貼在地上也會飛起來
+  const thrown = v.vx !== 0 || v.vy !== 0
+  const launch = v.vy < 0
+  // 翻滾的角速度跟著水平速度，甩越快轉越快
+  const spin = clamp(v.vx * 0.006, -12, 12)
   if (isSwimmer()) {
     if (swimFree()) {
-      // 整個畫面就是海：放開就從那裡繼續游
+      // 整個畫面就是海：放開就從那裡繼續游，丟出去的話先順著方向滑一段（水的阻力比較大，速度打個折）
       turtle.mode = 'swim'
       turtle.target = null
-      turtle.vx = 0
-      turtle.vy = 0
+      turtle.vx = v.vx * 0.5
+      turtle.vy = v.vy * 0.5
       if (expanded) dropOnDisplay(cur.id)
-    } else if (actor.lift <= 0) {
+    } else if (actor.lift <= 0 && !launch) {
       actor.lift = 0
       turtle.mode = 'land'
       if (expanded) dropOnDisplay(cur.id)
     } else {
       turtle.mode = 'fall' // 掉下去，落進淺水裡
-      actor.vy = 0
+      actor.vy = v.vy
+      turtle.vx = v.vx
+      actor.lift = Math.max(actor.lift, 0.01)
     }
   } else if (crawlFree()) {
-    // 放開就往下掉，落在第一個碰到的視窗頂端或工具列上
-    crawlFall(0, 0)
+    // 放開就往下掉（丟出去的話照拋物線飛），落在第一個碰到的視窗頂端或工具列上
+    crawlFall(v.vx, v.vy)
+    crawl.spin = spin
     if (expanded) dropOnDisplay(cur.id)
   } else if (isFlyer()) {
-    if (actor.lift <= 0) {
+    if (actor.lift <= 0 && !launch) {
       actor.lift = 0
       landOn(groundPerch(), actor.x)
       if (expanded) dropOnDisplay(cur.id)
@@ -2860,12 +2958,23 @@ window.addEventListener('mouseup', (e) => {
       bird.target = null
       bird.flightT = 0
       bird.route = config.roamScreen ? 1 : 0
+      bird.vx = v.vx
+      bird.vy = v.vy
+      bird.thrownT = thrown ? 0.7 : 0
+      actor.lift = Math.max(actor.lift, 0.01)
       // 到處飛的時候整台螢幕都是範圍，放開就可以把視窗縮回這台螢幕
       if (expanded && config.roamScreen) dropOnDisplay(cur.id)
     }
-  } else if (actor.lift <= 0) {
-    actor.lift = 0
-    if (expanded) dropOnDisplay(cur.id) // 直接放在地上，不用等下墜
+  } else {
+    actor.vx = v.vx
+    actor.vy = v.vy
+    actor.spin = spin
+    if (launch) actor.lift = Math.max(actor.lift, 0.01)
+    if (actor.lift <= 0) {
+      actor.lift = 0
+      actor.vy = 0
+      if (expanded) dropOnDisplay(cur.id) // 直接放在地上（往旁邊甩的話在地上滑一段），不用等下墜
+    }
   }
   setHover(overMascot(e.clientX, e.clientY))
 })

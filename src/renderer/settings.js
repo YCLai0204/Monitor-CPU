@@ -115,6 +115,7 @@ function render(next) {
   const c = state.config
 
   $('#version').textContent = `v${state.version}`
+  $('#egg-test').hidden = !state.dev
 
   for (const seg of $$('[data-key].seg, [data-key].choices')) {
     for (const b of seg.querySelectorAll('button')) {
@@ -248,6 +249,7 @@ scale.addEventListener('input', () => {
 
 $('#display').addEventListener('change', (e) => change({ displayId: Number(e.target.value) }))
 $('#temp-help').addEventListener('click', () => api.temperatureHelp())
+for (const b of $$('[data-egg]')) b.addEventListener('click', () => api.testEgg(b.dataset.egg))
 $('#quit').addEventListener('click', () => api.quit())
 $('#relaunch').addEventListener('click', () => api.relaunch())
 

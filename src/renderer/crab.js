@@ -46,6 +46,8 @@ function drawCrab(ctx, opts) {
     pose = 'walk',   // 'icon'：左右對稱、完全靜止的站姿
     detail = 'high', // 'low'：線條加粗、省略殼紋與嘴，給 16–32px 的小圖示用
     shadow = true,
+    lostClaw = 0,    // 被甩掉的那隻螯（-1 左、1 右、0 都在）
+    regrow = 0,      // 掉的那隻長回來長到幾成（0..1），螃蟹的螯真的會再生
   } = opts
 
   const st = { still: pose === 'icon', low: detail === 'low' }
@@ -70,8 +72,8 @@ function drawCrab(ctx, opts) {
 
   drawLegs(ctx, -1, phase, col, st)
   drawLegs(ctx, 1, phase, col, st)
-  drawClaw(ctx, -1, phase, speed, col, st)
-  drawClaw(ctx, 1, phase, speed, col, st)
+  drawClaw(ctx, -1, phase, speed, col, st, lostClaw === -1 ? regrow : 1)
+  drawClaw(ctx, 1, phase, speed, col, st, lostClaw === 1 ? regrow : 1)
   drawBody(ctx, col, st)
   ctx.shadowBlur = 0
   drawEyes(ctx, look, blink, phase, col, st)
@@ -193,7 +195,8 @@ function drawLegs(ctx, side, phase, col, st) {
   ctx.restore()
 }
 
-function drawClaw(ctx, side, phase, speed, col, st) {
+/** grow（0..1）是這隻螯長到幾成：0 是被甩掉了只剩一小截，之後從肩膀慢慢長回來。 */
+function drawClaw(ctx, side, phase, speed, col, st, grow = 1) {
   // 跑越快、螯揮得越開；站著的時候會慢慢一開一合
   const idle = st.still ? 0.7 : (Math.sin(phase * 0.9 + (side < 0 ? 0 : 1.7)) + 1) / 2
   const open = st.still ? 0.42 : 0.12 + idle * 0.34 + Math.min(0.25, speed / 900)
@@ -205,11 +208,26 @@ function drawClaw(ctx, side, phase, speed, col, st) {
   const elbowY = -46 - idle * 3
   const handX = side * reach
   const handY = -54 - idle * 5
-  const edge = st.low ? 2.4 : 1.6
 
   ctx.save()
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
+
+  if (grow < 1) {
+    // 斷掉的地方留一小截
+    ctx.beginPath()
+    ctx.ellipse(shoulderX + side * 3, shoulderY - 2, 4, 3.4, 0, 0, Math.PI * 2)
+    ctx.fillStyle = col.dark
+    ctx.fill()
+    if (grow <= 0.02) {
+      ctx.restore()
+      return
+    }
+    // 長回來：以肩膀為中心從小變大
+    ctx.translate(shoulderX, shoulderY)
+    ctx.scale(grow, grow)
+    ctx.translate(-shoulderX, -shoulderY)
+  }
 
   // 手臂
   ctx.beginPath()
@@ -222,7 +240,13 @@ function drawClaw(ctx, side, phase, speed, col, st) {
   // 螯
   ctx.translate(handX, handY)
   ctx.rotate(side * -0.5)
+  drawPincer(ctx, side, open, col, st)
+  ctx.restore()
+}
 
+/** 螯本身（兩片夾子和根部），原點在根部。 */
+function drawPincer(ctx, side, open, col, st) {
+  const edge = st.low ? 2.4 : 1.6
   const jaw = (angle, len, thick) => {
     ctx.save()
     ctx.rotate(angle)
@@ -247,7 +271,25 @@ function drawClaw(ctx, side, phase, speed, col, st) {
   ctx.lineWidth = edge
   ctx.strokeStyle = col.deep
   ctx.stroke()
+}
 
+/** 被甩掉、掉在地上的那隻螯（原點在螯的中間，angle 是轉了多少）。 */
+function drawLooseClaw(ctx, { scale = 1, hue = 186, side = 1, angle = 0 } = {}) {
+  const col = palette(hue)
+  const st = { still: false, low: false }
+  ctx.save()
+  ctx.scale(scale, scale)
+  ctx.rotate(angle)
+  // 夾子都朝 +x 長，斷掉的那一小截手臂接在 -x 那一側
+  ctx.beginPath()
+  ctx.moveTo(-14, 3)
+  ctx.lineTo(-4, 0)
+  ctx.lineCap = 'round'
+  ctx.lineWidth = 4.5
+  ctx.strokeStyle = col.dark
+  ctx.stroke()
+  ctx.translate(-4, 0)
+  drawPincer(ctx, side, 0.3, col, st)
   ctx.restore()
 }
 
@@ -389,5 +431,5 @@ function renderIcon(size, hue = 186, detail = size <= 32 ? 'low' : 'high') {
   return c.toDataURL('image/png')
 }
 
-window.CrabArt = { drawCrab, drawBubbles, loadToHue, palette, renderIcon }
+window.CrabArt = { drawCrab, drawBubbles, drawLooseClaw, loadToHue, palette, renderIcon }
 })()

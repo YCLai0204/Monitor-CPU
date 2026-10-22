@@ -19,6 +19,7 @@ const ART = window.MascotArt || {}
  * waterDepth 是那片淺水多深（scale = 1 時的 px，沒寫就是 WATER_DEPTH）；leap 是偶爾跳出水面（height 是多高），
  * 被戳到也會跳；spout 是浮在水面時偶爾從噴氣孔噴水（位置是畫法的 blowhole）。
  * curl 是被戳到時捲成一顆球（像穿山甲）：原地縮著不動，過幾秒才打開；扒在牆上時會直接掉下去。
+ * loseClaw 是被拖著用力甩之後會甩掉一隻螯、過一陣子再長回來（彩蛋，像螃蟹）。
  * 有 curl 的動物被抓著、在空中、衝刺時也是一顆球（BALL_POSES），捲起來、打開的過程由畫法依 curl 參數（0..1）畫。
  *
  * 新增動物：寫一支畫法（掛到 window.MascotArt，見 bear.js），在 index.html 載入，
@@ -31,6 +32,7 @@ const MASCOT_DEFS = {
     top: 68,
     speed: 1,
     bubbles: true,
+    loseClaw: true,
     draw: (c, o) => window.CrabArt.drawCrab(c, { ...o, hue: loadToHue(o.load) }),
   },
   bird: { engine: 'fly', halfW: 46, top: 74, draw: window.BirdArt.drawBird },
@@ -415,6 +417,7 @@ function frame(now) {
 function isAnimating() {
   const load = clamp(metrics.load || 0, 0, 100)
   if (drag || actor.speed > 3 || load >= 70 || bubbles.length) return true // 70% 以上會冒汗、冒熱氣
+  if (eggAnimating()) return true // 頭暈的星星、滾走、甩掉的螯
   if (foods.some((f) => f.id === null && !f.landed)) return true // 食物在往下掉
   if (isSwimmer()) {
     // 在水裡時波浪一直在動；在岸上停著就不用
@@ -459,6 +462,7 @@ function renderKey(now) {
 function step(dt) {
   const load = clamp(metrics.load || 0, 0, 100)
   updateBlink(dt)
+  stepEggs(dt)
   if (isSwimmer()) stepSwim(dt, load)
   else if (isFlyer()) stepFly(dt, load)
   else {
@@ -488,6 +492,7 @@ function step(dt) {
   }
   updateBubbles(dt, load)
   updateLabel()
+  updateSpeech()
 }
 
 function stepCrawl(dt, load) {
@@ -520,6 +525,16 @@ function stepCrawl(dt, load) {
     }
     return
   }
+  if (rolling()) {
+    // 連點後捲成球往反方向滾走（彩蛋），碰到螢幕邊就彈回來
+    actor.speed = approach(actor.speed, ROLL_SPEED * scale, dt * 1200 * scale)
+    const dx = actor.speed * actor.dir * dt
+    actor.x += dx
+    if (actor.x < cur.left + margin) { actor.x = cur.left + margin; actor.dir = 1 }
+    if (actor.x > cur.right - margin) { actor.x = cur.right - margin; actor.dir = -1 }
+    actor.phase += (Math.abs(dx) / (strideOf() * scale)) * Math.PI * 2
+    return
+  }
   if (curled()) {
     actor.speed = 0
     return
@@ -540,6 +555,11 @@ function stepCrawl(dt, load) {
     }
     // 偶爾自己轉向，才不會像一顆來回彈的球
     if (Math.random() < 0.12 * dt) actor.dir *= -1
+  }
+  if (egg.dizzy > 0) {
+    // 頭暈：走得慢、一直搞錯方向
+    actor.speed = Math.min(actor.speed, 40 * scale)
+    if (Math.random() < 1.5 * dt) actor.dir *= -1
   }
 
   const dx = actor.speed * actor.dir * dt
@@ -1181,10 +1201,21 @@ function stepClimber(dt, e, path, onWindow) {
     crawl.wallRange = [uMin, uMax]
   }
 
-  if (curled()) {
+  if (rolling()) {
+    // 連點後捲成球滾走（彩蛋）：不管原本要去哪；滾到牆邊就彈回來，不會滾上牆
+    goal = null
+    speed = actor.speed = ROLL_SPEED * scale
+    const onWall = Math.abs(crawl.nx) > 0.5
+    if (onWall && !egg.rollBounced) crawl.move *= -1
+    egg.rollBounced = onWall
+  } else if (curled()) {
     // 捲成球：原地不動，位置還是照常對齊（視窗被拖動時跟著走）
     goal = null
     speed = actor.speed = 0
+  } else if (egg.dizzy > 0 && goal === null) {
+    // 頭暈：爬得慢、一直搞錯方向
+    speed = Math.min(speed, 40 * scale)
+    if (Math.random() < 1.2 * dt) crawl.move *= -1
   }
   if (goal !== null) {
     crawl.move = goal >= u ? 1 : -1
@@ -1331,6 +1362,11 @@ function stepCrawlFree(dt, load) {
     if (Math.random() < 0.08 * dt) crawl.move *= -1
   }
   if (curled()) speed = actor.speed = 0
+  if (egg.dizzy > 0) {
+    // 頭暈：爬得慢、一直搞錯方向
+    speed = Math.min(speed, 40 * scale)
+    if (!crawl.mission && Math.random() < 1.2 * dt) crawl.move *= -1
+  }
   actor.speed += (speed - actor.speed) * Math.min(1, dt * 4)
 
   const step = actor.speed * dt
@@ -2147,6 +2183,7 @@ function renderSwimmer(now, rx, ry) {
       : turtle.mode === 'land' || turtle.mode === 'fall' ? (def.aquatic ? 'held' : 'land') : 'swim'
   ctx.save()
   ctx.translate(rx, ry)
+  applyDizzySway(ctx, now)
   def.draw(ctx, {
     scale: s,
     dir: actor.dir,
@@ -2162,6 +2199,11 @@ function renderSwimmer(now, rx, ry) {
   ctx.restore()
   art.drawWaterFront(ctx, water)
   art.drawParticles(ctx, turtle.particles, s)
+  // 頭暈的星星在頭上，畫在水的前面
+  ctx.save()
+  ctx.translate(rx, ry)
+  drawDizzyStars(ctx, now)
+  ctx.restore()
 }
 
 /** 往 target 靠近，每秒最多 rate。 */
@@ -2218,6 +2260,7 @@ function render(now) {
   const boxes = [{ x: rx - 220 * scale, y: ry - 240 * scale, w: 440 * scale, h: 400 * scale }]
   const foodSpots = drawableFoods()
   for (const p of foodSpots) boxes.push({ x: p.x - 30 * scale, y: p.y - 40 * scale, w: 60 * scale, h: 46 * scale })
+  if (egg.claw) boxes.push({ x: egg.claw.x - 30 * scale, y: egg.claw.y - 30 * scale, w: 60 * scale, h: 60 * scale })
   if (isSwimmer() && turtle.water > 0.01) {
     // 淺水上岸後會留在原地慢慢退掉，可能已經不在烏龜身邊
     const w = WATER_WIDTH * scale
@@ -2244,6 +2287,7 @@ function render(now) {
     mascotDef().food(ctx, { scale, time: now })
     ctx.restore()
   }
+  drawLooseClaw(now)
 
   if (isSwimmer()) {
     renderSwimmer(now, rx, ry)
@@ -2256,6 +2300,7 @@ function render(now) {
   if (isFlyer()) {
     const flying = bird.mode === 'fly'
     const carried = !!(drag && drag.moved)
+    applyDizzySway(ctx, now)
     mascotDef().draw(ctx, {
       scale,
       phase: actor.phase,
@@ -2280,6 +2325,7 @@ function render(now) {
       shadow: !flying && bird.hopY === 0,
       time: now,
     })
+    drawDizzyStars(ctx, now)
     ctx.restore()
     return
   }
@@ -2294,6 +2340,7 @@ function render(now) {
 
   if (bubbles.length && mascotDef().bubbles) drawBubbles(ctx, bubbles, scale)
 
+  applyDizzySway(ctx, now)
   mascotDef().draw(ctx, {
     scale,
     load,
@@ -2308,7 +2355,11 @@ function render(now) {
     heat: clamp((load - 55) / 45, 0, 1),
     blink: actor.blink,
     time: now,
+    // 甩掉的螯（彩蛋）：最後 CLAW_REGROW 秒慢慢長回來
+    lostClaw: egg.clawGone > 0 ? egg.clawSide : 0,
+    regrow: clamp(1 - egg.clawGone / CLAW_REGROW, 0, 1),
   })
+  drawDizzyStars(ctx, now)
   ctx.restore()
 }
 
@@ -2320,9 +2371,10 @@ function render(now) {
  */
 function crawlPose() {
   if (drag && drag.moved) return 'held'
-  if (!crawlFree()) return actor.lift > 0 ? 'fall' : curled() ? 'curl' : groundPose()
+  if (!crawlFree()) return actor.lift > 0 ? 'fall' : rolling() ? 'run' : curled() ? 'curl' : groundPose()
   if (crawl.mode === 'held') return 'held'
   if (crawl.mode === 'fall') return 'fall'
+  if (rolling()) return 'run' // 連點後捲成球滾走（彩蛋），用衝刺時滾動的畫法
   if (curled()) return 'curl'
   // 坐著、吃東西只在停下來時才畫，移動中一定是走路的姿勢
   const still = actor.speed < 5
@@ -2397,24 +2449,24 @@ function updateLabel() {
   }
 
   const w = labelState.width
-  let ax = actor.x
-  let ly
-  if (crawlFree()) {
-    // 倒掛在天花板時標籤放在身體下面，其他時候放在身體上面
-    const c = crawlCenter()
-    ax = c.x
-    ly = crawl.ny > 0.5 ? c.y + topH() * 0.5 + 8 : Math.max(2, c.y - topH() * 0.5 - 26)
-  } else {
-    const birdHop = isFlyer() ? bird.hopY : 0
-    ly = Math.max(2, feetY() - birdHop - topH() - 26)
-  }
-  const lx = Math.max(cur.left + 6, Math.min(cur.right - w - 6, ax - w / 2))
-  const transform = `translate(${Math.round(lx)}px, ${Math.round(ly)}px)`
+  const a = labelAnchor()
+  const lx = Math.max(cur.left + 6, Math.min(cur.right - w - 6, a.x - w / 2))
+  const transform = `translate(${Math.round(lx)}px, ${Math.round(a.y)}px)`
   if (labelState.transform !== transform) {
     labelState.transform = transform
     label.style.transform = transform
   }
   setLabelVisible(true)
+}
+
+/** 數值標籤要放的位置：x 是中心，y 是上緣（倒掛在天花板時放在身體下面，其他時候放在身體上面）。 */
+function labelAnchor() {
+  if (crawlFree()) {
+    const c = crawlCenter()
+    return { x: c.x, y: crawl.ny > 0.5 ? c.y + topH() * 0.5 + 8 : Math.max(2, c.y - topH() * 0.5 - 26) }
+  }
+  const birdHop = isFlyer() ? bird.hopY : 0
+  return { x: actor.x, y: Math.max(2, feetY() - birdHop - topH() - 26) }
 }
 
 function has(v) {
@@ -2423,6 +2475,269 @@ function has(v) {
 
 function fmt(v, unit) {
   return has(v) ? `${Math.round(v)}${unit}` : 'N/A'
+}
+
+// ---------------------------------------------------------------- 彩蛋
+
+const DIZZY_CLICKS = 5               // 連點幾下會頭暈（點的時候牠會跑走，太多下很難點到）
+const DIZZY_WINDOW_MS = 5000         // 要在多久之內點完
+const DIZZY_TIME = 4                 // 頭暈幾秒
+const ROLL_TIME = 2.2                // 會捲成球的（curl）連點之後捲成球滾走幾秒，停下來才頭暈
+const ROLL_SPEED = 300               // 滾走的速度（px/s，乘上 scale）
+const SHAKE_TURNS = 6                // 拖著左右甩幾下會頭暈
+const SHAKE_WINDOW_MS = 1500         // 要在多久之內甩完
+const SHAKE_MIN = 24                 // 一下至少要甩多遠才算（px，乘上 scale）
+const CLAW_TIME = 12                 // 甩掉的螯多久之後長好
+const CLAW_REGROW = 3                // 最後幾秒慢慢長回來
+const REST_EVERY_MS = 60 * 60 * 1000 // 連續開多久提醒休息一次
+const SPEECH_TIME = 9                // 提醒的對話框顯示幾秒
+
+const egg = {
+  clicks: [],          // 最近幾下點擊的時間
+  dizzyAt: -Infinity,  // 上一次連點觸發的時間（剛觸發完的雙擊不打開設定）
+  dizzy: 0,            // 頭暈的剩餘時間
+  rollT: 0,            // 捲成球滾走的剩餘時間
+  rollBounced: false,  // 滾到牆邊彈回來了（離開牆邊才重設，免得每格都在彈）
+  shake: { x: null, from: 0, dir: 0, turns: [] }, // 拖著甩：上一個位置、這一段從哪開始甩、往哪甩、每次換方向的時間
+  shaken: false,       // 這次拖曳甩夠了，放開時頭暈
+  claw: null,          // 甩掉、正在飛或掉在地上的螯：{ side, x, y, vx, vy, angle, spin, landed, life }
+  clawGone: 0,         // 少一隻螯的剩餘時間
+  clawSide: 0,         // 少的是哪一隻（-1 左、1 右）
+  startedAt: Date.now(),
+  rests: 0,            // 已經提醒過幾次休息
+  speechT: 0,          // 對話框還要顯示多久
+  speechText: '',
+}
+const speech = document.getElementById('speech')
+const speechState = { visible: null, text: null, transform: null, width: 160 }
+
+/** 記下這一下點擊，5 秒內點滿 5 下就回傳 true。 */
+function countClick() {
+  const now = performance.now()
+  egg.clicks = egg.clicks.filter((t) => now - t < DIZZY_WINDOW_MS)
+  egg.clicks.push(now)
+  if (egg.clicks.length < DIZZY_CLICKS) return false
+  egg.clicks.length = 0
+  egg.dizzyAt = now
+  return true
+}
+
+function startDizzy(t) {
+  egg.dizzy = Math.max(egg.dizzy, t)
+}
+
+/** 正捲成球滾走（有設定 curl 的動物才會）。 */
+function rolling() {
+  return egg.rollT > 0 && !!mascotDef().curl
+}
+
+/** 連點太多下：頭暈，頭上轉星星、身體歪來歪去。會捲成球的動物先捲成球往點的反方向滾走，停下來才頭暈。 */
+function dizzyFromClicks(fromX) {
+  if (!mascotDef().curl) {
+    startDizzy(DIZZY_TIME)
+    return
+  }
+  const away = actor.x >= fromX ? 1 : -1
+  actor.curl = 0
+  egg.rollT = ROLL_TIME
+  egg.rollBounced = false
+  if (crawlFree() && crawl.mode === 'walk' && wallSide()) {
+    crawlFall(crawl.nx * 60, 0) // 扒在牆上的話先掉下來，落地再滾
+  } else if (crawlFree() && actor.dir !== away) {
+    crawl.move *= -1 // 沿著環爬的方向換過來，才會往反方向滾
+  }
+  actor.dir = away
+}
+
+/** 拖著甩：記下左右換方向的次數，1.5 秒內甩滿 6 下（每下夠遠）就算甩夠了。 */
+function trackShake(x) {
+  const sh = egg.shake
+  if (sh.x === null) {
+    sh.x = x
+    sh.from = x
+    return
+  }
+  const d = Math.sign(x - sh.x)
+  if (d && d !== sh.dir) {
+    if (sh.dir && Math.abs(sh.x - sh.from) >= SHAKE_MIN * config.scale) {
+      const now = performance.now()
+      sh.turns = sh.turns.filter((t) => now - t < SHAKE_WINDOW_MS)
+      sh.turns.push(now)
+      if (sh.turns.length >= SHAKE_TURNS) egg.shaken = true
+    }
+    sh.dir = d
+    sh.from = sh.x
+  }
+  sh.x = x
+}
+
+function resetShake() {
+  egg.shake = { x: null, from: 0, dir: 0, turns: [] }
+  egg.shaken = false
+}
+
+/** 被拖著用力甩，放開之後：頭暈；會掉螯的（螃蟹）還會往最後甩的方向甩飛一隻螯，過一陣子再長回來。 */
+function shakeOff() {
+  egg.shaken = false
+  startDizzy(DIZZY_TIME + 1)
+  if (!mascotDef().loseClaw || egg.clawGone > 0) return
+  const s = config.scale
+  const side = egg.shake.dir || (Math.random() < 0.5 ? -1 : 1)
+  egg.clawSide = side
+  egg.clawGone = CLAW_TIME
+  const c = crawlFree() ? crawlCenter() : { x: actor.x, y: feetY() - topH() * 0.5 }
+  egg.claw = {
+    side,
+    x: c.x + side * 40 * s,
+    y: c.y - 20 * s,
+    vx: side * rand(180, 260) * s,
+    vy: -rand(220, 340) * s,
+    angle: 0,
+    spin: side * rand(8, 14),
+    landed: false,
+    life: 5,
+  }
+}
+
+/** 連續開滿 n 小時：冒出對話框提醒休息，順便做個動作（伸懶腰、跳一下、跳出水面）。 */
+function remindRest(hours) {
+  egg.speechText = `休息一下吧！已經陪你 ${hours} 小時了`
+  egg.speechT = SPEECH_TIME
+  const def = mascotDef()
+  if (isFlyer()) {
+    if (bird.mode === 'perch') {
+      bird.act = 'stretch'
+      bird.actT = 2.5
+      bird.stretchSide = Math.random() < 0.5 ? -1 : 1
+    }
+  } else if (isSwimmer()) {
+    const load = clamp(metrics.load || 0, 0, 100)
+    if (turtle.mode === 'water' && !(def.leap && startLeap(load / 100))) splash(actor.x, groundY() - waterDepth(), 10)
+  } else if (!crawlFree() && actor.lift <= 0 && !curled() && !def.curl) {
+    // 在工具列上開心地跳一下（會捲成球的跳起來會變成球，就不跳了）
+    actor.vy = -520 * config.scale
+    actor.lift = 0.01
+  }
+}
+
+function stepEggs(dt) {
+  if (egg.dizzy > 0) egg.dizzy = Math.max(0, egg.dizzy - dt)
+  if (egg.rollT > 0) {
+    egg.rollT -= dt
+    if (egg.rollT <= 0) {
+      egg.rollT = 0
+      if (mascotDef().curl) startDizzy(3) // 滾完頭暈
+    }
+  }
+  if (egg.clawGone > 0) egg.clawGone = Math.max(0, egg.clawGone - dt)
+  const c = egg.claw
+  if (c && !c.landed) {
+    c.vy += GRAVITY * dt
+    c.x = clamp(c.x + c.vx * dt, cur.left + 10, cur.right - 10)
+    c.y += c.vy * dt
+    c.angle += c.spin * dt
+    if (c.y >= groundY() - 4 * config.scale) {
+      c.y = groundY() - 4 * config.scale
+      c.landed = true
+    }
+  } else if (c) {
+    c.life -= dt
+    if (c.life <= 0) egg.claw = null
+  }
+  if (Date.now() - egg.startedAt >= (egg.rests + 1) * REST_EVERY_MS) {
+    egg.rests++
+    remindRest(egg.rests)
+  }
+  if (egg.speechT > 0) egg.speechT = Math.max(0, egg.speechT - dt)
+}
+
+/** 有彩蛋正在進行（要一直重畫）。 */
+function eggAnimating() {
+  return egg.dizzy > 0 || egg.rollT > 0 || !!egg.claw || egg.clawGone > 0
+}
+
+/** 頭暈時身體左右歪（弧度），最後一小段慢慢停下來。 */
+function dizzySway(now) {
+  if (egg.dizzy <= 0) return 0
+  return Math.sin(now * 0.008) * 0.14 * Math.min(1, egg.dizzy / 0.8)
+}
+
+/** 繞著身體中心歪一下；原點是腳底，跟畫吉祥物時一樣。 */
+function applyDizzySway(c, now) {
+  const sway = dizzySway(now)
+  if (!sway) return
+  c.translate(0, -topH() * 0.5)
+  c.rotate(sway)
+  c.translate(0, topH() * 0.5)
+}
+
+/** 頭暈時頭上繞圈圈的星星；原點是腳底。 */
+function drawDizzyStars(c, now) {
+  if (egg.dizzy <= 0) return
+  const s = config.scale
+  const fade = Math.min(1, egg.dizzy / 0.8)
+  const cy = -topH() - 8 * s
+  for (let i = 0; i < 3; i++) {
+    const a = now * 0.006 + (i * Math.PI * 2) / 3
+    const front = Math.sin(a) > 0 // 轉到前面的星星大一點、亮一點
+    const x = Math.cos(a) * 17 * s
+    const y = cy + Math.sin(a) * 5 * s
+    const r = (front ? 4.2 : 3.2) * s
+    c.save()
+    c.globalAlpha = fade * (front ? 1 : 0.6)
+    c.translate(x, y)
+    c.rotate(a * 0.5)
+    c.beginPath()
+    for (let k = 0; k < 10; k++) {
+      const rr = k % 2 ? r * 0.45 : r
+      const t = (k * Math.PI) / 5 - Math.PI / 2
+      if (k === 0) c.moveTo(Math.cos(t) * rr, Math.sin(t) * rr)
+      else c.lineTo(Math.cos(t) * rr, Math.sin(t) * rr)
+    }
+    c.closePath()
+    c.fillStyle = '#ffd84a'
+    c.fill()
+    c.lineWidth = 0.9 * s
+    c.strokeStyle = '#b98510'
+    c.stroke()
+    c.restore()
+  }
+}
+
+/** 甩掉的那隻螯（飛出去、掉在地上，最後一秒淡掉）。 */
+function drawLooseClaw(now) {
+  const c = egg.claw
+  if (!c || !window.CrabArt.drawLooseClaw) return
+  const load = clamp(metrics.load || 0, 0, 100)
+  ctx.save()
+  ctx.globalAlpha = c.landed ? Math.min(1, c.life) : 1
+  ctx.translate(c.x, c.y)
+  window.CrabArt.drawLooseClaw(ctx, { scale: config.scale, hue: loadToHue(load), side: c.side, angle: c.angle })
+  ctx.restore()
+}
+
+/** 提醒休息的對話框：數值標籤有顯示時放在它上面，沒顯示時放在標籤的位置，跟著吉祥物走。 */
+function updateSpeech() {
+  const show = egg.speechT > 0
+  if (speechState.visible !== show) {
+    speechState.visible = show
+    speech.classList.toggle('visible', show)
+  }
+  if (!show) return
+  if (speechState.text !== egg.speechText) {
+    speechState.text = egg.speechText
+    speech.textContent = egg.speechText
+    speechState.width = speech.offsetWidth || 160
+  }
+  const a = labelAnchor()
+  const w = speechState.width
+  const lx = Math.max(cur.left + 6, Math.min(cur.right - w - 6, a.x - w / 2))
+  const y = labelState.visible ? Math.max(2, a.y - 34) : a.y
+  const transform = `translate(${Math.round(lx)}px, ${Math.round(y)}px)`
+  if (speechState.transform !== transform) {
+    speechState.transform = transform
+    speech.style.transform = transform
+  }
 }
 
 // ---------------------------------------------------------------- 滑鼠
@@ -2467,6 +2782,7 @@ window.addEventListener('mousedown', (e) => {
     dy: crawlFree() ? -topH() * 0.5 : e.clientY - feetY(),
     moved: false,
   }
+  resetShake()
 })
 
 window.addEventListener('mousemove', (e) => {
@@ -2487,6 +2803,7 @@ window.addEventListener('mousemove', (e) => {
     // 所以視窗本來就蓋滿整台螢幕時，拖到螢幕邊緣（要往別台去）才展開
     if (drag.moved && !expanded && (!freeLayout || nearEdge(e.clientX, e.clientY))) setExpanded(true)
     // 視窗正在展開：游標座標已經是新視窗的，但版面還是舊的，算出來的位置會跳；等版面到了再跟上
+    if (drag.moved) trackShake(e.clientX) // 拖著用力甩（彩蛋）
     if (drag.moved && !layoutPending) {
       const margin = halfW() + 6
       const x = clamp(e.clientX - drag.dx, margin, viewW - margin)
@@ -2509,6 +2826,7 @@ window.addEventListener('mouseup', (e) => {
   const moved = drag.moved
   drag = null
   if (!moved) return
+  if (egg.shaken) shakeOff()
   // 落在螢幕邊緣或縫隙時，收進所在螢幕的範圍內
   const margin = halfW() + 6
   actor.x = clamp(actor.x, cur.left + margin, cur.right - margin)
@@ -2558,6 +2876,15 @@ window.addEventListener('click', (e) => {
     return
   }
   if (!overMascot(e.clientX, e.clientY)) return
+  // 連點的話取消雙擊排好的「打開設定」，不然點一點設定視窗就跳出來了
+  if (settingsTimer) {
+    clearTimeout(settingsTimer)
+    settingsTimer = null
+  }
+  if (countClick()) {
+    dizzyFromClicks(e.clientX) // 連點 5 下（彩蛋）
+    return
+  }
   pinned = !pinned
   if (isFlyer()) {
     // 被戳到會嚇一跳飛走
@@ -2586,8 +2913,18 @@ window.addEventListener('click', (e) => {
   actor.speed = Math.max(actor.speed, 140)
 })
 
+// 雙擊打開設定：等一下才開，這段時間內又點了（在連點）就取消
+let settingsTimer = null
 window.addEventListener('dblclick', (e) => {
-  if (overMascot(e.clientX, e.clientY)) window.crabAPI.openSettings()
+  if (!overMascot(e.clientX, e.clientY)) return
+  // 正在連點（0.6 秒內點了三下以上，或剛觸發完頭暈）
+  const now = performance.now()
+  if (egg.clicks.filter((t) => now - t < 600).length > 2 || now - egg.dizzyAt < 1000) return
+  clearTimeout(settingsTimer)
+  settingsTimer = setTimeout(() => {
+    settingsTimer = null
+    window.crabAPI.openSettings()
+  }, 350)
 })
 
 window.addEventListener('contextmenu', (e) => {
@@ -2617,6 +2954,14 @@ window.crabAPI.onCursor((pos) => {
 })
 
 window.crabAPI.onMetrics((data) => { metrics = data })
+// 設定視窗的測試按鈕（開發時才有）：直接觸發彩蛋
+window.crabAPI.onEgg((name) => {
+  if (name === 'dizzy') dizzyFromClicks(actor.x - actor.dir) // 當作從後面點，往前跑
+  else if (name === 'shake') {
+    egg.shake.dir = Math.random() < 0.5 ? -1 : 1
+    shakeOff()
+  } else if (name === 'rest') remindRest(Math.max(1, egg.rests))
+})
 window.crabAPI.onConfig((data) => {
   const wasFlyer = isFlyer()
   const wasSwimmer = isSwimmer()

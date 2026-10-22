@@ -697,6 +697,7 @@ function settingsState() {
   return {
     config,
     version: app.getVersion(),
+    dev: !app.isPackaged, // 用 npm start 跑的時候才顯示彩蛋的測試按鈕
     displays: screen.getAllDisplays().map((d, i) => ({
       id: d.id,
       label: `螢幕 ${i + 1}${d.id === primaryId ? '（主要）' : ''} — ${d.bounds.width}×${d.bounds.height}`,
@@ -855,6 +856,11 @@ if (!app.requestSingleInstanceLock()) {
     const portable = process.env.PORTABLE_EXECUTABLE_FILE
     app.relaunch(portable ? { execPath: portable, args: [] } : undefined)
     app.quit()
+  })
+  // 彩蛋的測試按鈕（開發時才有）：轉給吉祥物視窗
+  ipcMain.on('settings:test-egg', (_e, name) => {
+    if (app.isPackaged || !['dizzy', 'shake', 'rest'].includes(name)) return
+    if (win && !win.isDestroyed()) win.webContents.send('egg', name)
   })
 }
 

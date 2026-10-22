@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('settingsAPI', {
   temperatureHelp: () => ipcRenderer.send('settings:temp-help'),
   quit: () => ipcRenderer.send('settings:quit'),
   relaunch: () => ipcRenderer.send('settings:relaunch'),
+  testEgg: (name) => ipcRenderer.send('settings:test-egg', name),
 })

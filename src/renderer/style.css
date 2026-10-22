@@ -45,8 +45,46 @@ body {
   opacity: 1;
 }
 
+/* 彩蛋：連續開一小時提醒休息的對話框，白底、下面有一個小尖角指向吉祥物 */
+#speech {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 5px 11px;
+  border-radius: 10px;
+  font: 600 12px/1.4 "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+  white-space: nowrap;
+  color: #2a2f38;
+  background: #fffdf6;
+  border: 1.5px solid #e2c36a;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 250ms ease;
+  pointer-events: none;
+  will-change: transform;
+}
+
+#speech::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  background: #fffdf6;
+  border-right: 1.5px solid #e2c36a;
+  border-bottom: 1.5px solid #e2c36a;
+  transform: rotate(45deg);
+}
+
+#speech.visible {
+  opacity: 1;
+}
+
 /* 視窗正在展開／收合：立刻藏起來（不等淡出），免得舊畫面被 Windows 貼到別的位置 */
 body.relayout #label,
+body.relayout #speech,
 body.relayout canvas {
   visibility: hidden;
   transition: none;

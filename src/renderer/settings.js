@@ -72,6 +72,16 @@ const MASCOTS = [
     perch: '櫻花鉤吻鮭是魚，不會到其他視窗上',
   },
   {
+    id: 'dolphin',
+    group: 'water',
+    name: '台灣白海豚',
+    roamOn: '把整個畫面當成海慢慢游，累了回到工具列的淺水裡',
+    roamOff: '關掉的話在工具列的淺水裡游，偶爾噴水、跳出水面',
+    noWindows: true,
+    perchTitle: '到其他視窗上',
+    perch: '台灣白海豚住在海裡，不會到其他視窗上',
+  },
+  {
     id: 'pangolin',
     group: 'land',
     name: '台灣穿山甲',

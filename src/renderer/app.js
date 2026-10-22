@@ -15,9 +15,9 @@ const ART = window.MascotArt || {}
  * foodReach 是吃東西時嘴巴離腳底中心多遠（scale = 1 時）：有的話會停在食物旁邊、面向食物吃，
  * 食物吃的時候留在原地照常畫（像穿山甲舔蟻丘）；沒有的話走到食物正上方拿起來吃（像黑熊捧著吃）。
  * run 是負載高時改用四腳衝刺：負載到 on% 開始、掉到 off% 以下才停（避免在門檻附近一直切換），速度乘上 boost。
- * 游泳類的選項：aquatic 是一直待在水裡、不會上岸（像魚），工具列上永遠有一片淺水跟著；
+ * 游泳類的選項：aquatic 是一直待在水裡、不會上岸（魚、海豚），工具列上永遠有一片淺水跟著；
  * waterDepth 是那片淺水多深（scale = 1 時的 px，沒寫就是 WATER_DEPTH）；leap 是偶爾跳出水面（height 是多高），
- * 被戳到也會跳。
+ * 被戳到也會跳；spout 是浮在水面時偶爾從噴氣孔噴水（位置是畫法的 blowhole）。
  * curl 是被戳到時捲成一顆球（像穿山甲）：原地縮著不動，過幾秒才打開；扒在牆上時會直接掉下去。
  * 有 curl 的動物被抓著、在空中、衝刺時也是一顆球（BALL_POSES），捲起來、打開的過程由畫法依 curl 參數（0..1）畫。
  *
@@ -55,6 +55,16 @@ const MASCOT_DEFS = {
     waterDepth: 20,
     leap: { height: 70 },
     draw: ART.salmon && ART.salmon.draw,
+  },
+  dolphin: {
+    engine: 'swim',
+    aquatic: true,
+    halfW: 52,
+    top: 44,
+    waterDepth: 20,
+    leap: { height: 110 },
+    spout: ART.dolphin && ART.dolphin.blowhole,
+    draw: ART.dolphin && ART.dolphin.draw,
   },
   pangolin: {
     engine: 'crawl',
@@ -1988,6 +1998,12 @@ function stepSwim(dt, load) {
       }
       if (e > 0.5 && Math.random() < dt * (1 + 4 * hyper)) splash(actor.x + actor.dir * 22 * s, groundY() - waterDepth(), 4, 0.7)
       const def = mascotDef()
+      // 浮在水面換氣：從噴氣孔噴出一小撮水
+      if (def.spout && Math.random() < dt * 0.12) {
+        const bx = actor.x + actor.dir * def.spout.x * s
+        const by = feetY() + def.spout.y * s
+        for (let i = 0; i < 7; i++) addParticle({ kind: 'drop', x: bx, y: by, vx: rand(-40, 40) * s, vy: -rand(160, 260) * s, r: rand(1.2, 2.2) * s, life: 1 })
+      }
       // 偶爾跳出水面，負載越高越常跳
       if (def.leap && Math.random() < dt * (0.03 + 0.2 * e + 0.3 * hyper) && startLeap(e)) return
       turtle.timer -= dt

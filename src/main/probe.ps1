@@ -130,7 +130,10 @@ function Get-GpuLoadFromCounter {
     # Windows 10/11 內建的 GPU Engine 計數器，不分廠牌（NVIDIA / AMD / Intel 都有）。
     # 每個 engine 各自算一條，把同一種 engtype 加總後取最大值，數字才會接近工作管理員。
     if (-not $gpuCounterWorks) { return $null }
-    $samples = (Get-Counter -Counter $gpuCounterPath -SampleInterval 1 -MaxSamples 2 -ErrorAction SilentlyContinue).CounterSamples
+    # -MaxSamples 2 會回傳兩組取樣，直接取 .CounterSamples 會把兩組攤平在一起、加總後變成兩倍，所以只用最後一組。
+    $sets = @(Get-Counter -Counter $gpuCounterPath -SampleInterval 1 -MaxSamples 2 -ErrorAction SilentlyContinue)
+    $samples = $null
+    if ($sets.Count -gt 0) { $samples = $sets[-1].CounterSamples }
     if (-not $samples) {
         $script:gpuCounterWorks = $false
         return $null

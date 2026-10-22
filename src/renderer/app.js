@@ -253,7 +253,7 @@ function applyLayout(l) {
   if (isFlyer() && bird.mode === 'fly' && bird.target) bird.target = null // 範圍變了，重新挑目標
   if (isSwimmer()) turtle.target = null
   // 版面變了，螃蟹原本貼著的邊可能已經不一樣：先放手掉下去，落地時重新貼上
-  if (crawlFree() && crawl.mode !== 'held') crabFall(0, 0)
+  if (crawlFree() && crawl.mode !== 'held') crawlFall(0, 0)
 
   // 新版面到了：馬上畫在正確的位置，不要等下一格
   if (!first) {
@@ -415,15 +415,15 @@ function renderKey(now) {
 function step(dt) {
   const load = clamp(metrics.load || 0, 0, 100)
   updateBlink(dt)
-  if (isSwimmer()) stepTurtle(dt, load)
-  else if (isFlyer()) stepBird(dt, load)
+  if (isSwimmer()) stepSwim(dt, load)
+  else if (isFlyer()) stepFly(dt, load)
   else {
     // 負載高時改用衝刺（有設定 run 的動物才有）
     const run = mascotDef().run
     if (!run) actor.running = false
     else if (load >= run.on) actor.running = true
     else if (load < run.off) actor.running = false
-    stepCrab(dt, load)
+    stepCrawl(dt, load)
     if (mascotDef().food) updateFood(dt)
     // 走路時臉轉向前進方向，停下來或爬牆時慢慢轉回正面（螃蟹的畫法不看這個）；停在牆上時東張西望
     const pose = crawlPose()
@@ -444,9 +444,9 @@ function step(dt) {
   updateLabel()
 }
 
-function stepCrab(dt, load) {
+function stepCrawl(dt, load) {
   if (crawlFree()) {
-    stepCrabFree(dt, load)
+    stepCrawlFree(dt, load)
     return
   }
   const scale = config.scale
@@ -507,7 +507,7 @@ function stepCrab(dt, load) {
   actor.phase += (Math.abs(dx) / (strideOf() * scale)) * Math.PI * 2 + dt * 1.1
 }
 
-// ---------------------------------------------------------------- 螃蟹：整個螢幕爬
+// ---------------------------------------------------------------- 爬行類（螃蟹、黑熊）：整個螢幕爬
 
 const CORNER_IN = 0.75     // 螢幕內側轉角的半徑（乘上螃蟹高度），轉過去時身體才不會跑出畫面
 const CORNER_OUT = 6       // 視窗外側轉角的半徑（px，乘上 scale）
@@ -557,7 +557,7 @@ function coveredAt(id, x, y) {
 }
 
 /** 可以落腳的上緣：工具列上緣，加上（有開的話）其他視窗沒被蓋住的頂端。 */
-function crabTops() {
+function crawlTops() {
   const tops = [{ kind: 'screen', id: 'screen', y: groundY(), x1: cur.left, x2: cur.right }]
   if (!config.perchWindows) return tops
   const ids = new Set(windowRects().map((w) => w.id))
@@ -663,7 +663,7 @@ function approachAngle(a, target, rate) {
  * 爬行類身體中心（視窗座標）。旋轉都繞這裡轉，從天花板放手翻正時才不會甩出畫面。
  * 攀爬型（黑熊）不跟著牆轉，貼在牆上時身體直立、離牆半個身寬，手腳伸過去扒著牆。
  */
-function crabCenter() {
+function crawlCenter() {
   const h2 = topH() * 0.5
   if (mascotDef().climber) {
     const side = Math.abs(crawl.nx)
@@ -679,10 +679,10 @@ function wallSide() {
   return crawl.nx < 0 ? 1 : -1
 }
 
-function crabFall(vx, vy) {
+function crawlFall(vx, vy) {
   // 離開環的那一刻保持身體中心不動，之後以「轉正」的腳底位置做物理
   if (crawl.mode === 'walk') {
-    const c = crabCenter()
+    const c = crawlCenter()
     actor.x = c.x
     actor.lift = groundY() - (c.y + topH() * 0.5)
   }
@@ -705,7 +705,7 @@ function resetCrawlPlans() {
   crawl.peek = false
 }
 
-function crabLand(top, x) {
+function crawlLand(top, x) {
   const loop = top.kind === 'window' ? { kind: 'window', id: top.id } : { kind: 'screen' }
   const shape = loopShape(loop)
   if (!shape) return false
@@ -730,9 +730,9 @@ function crabLand(top, x) {
 }
 
 /** 挑一個視窗去：記下要從天花板哪裡跳下去。 */
-function pickCrabMission() {
+function pickCrawlMission() {
   const m = halfW() + 4
-  const options = crabTops().filter((s) => s.kind === 'window' && s.y - cur.top > topH() * 2.2)
+  const options = crawlTops().filter((s) => s.kind === 'window' && s.y - cur.top > topH() * 2.2)
   if (!options.length) return
   const pick = options[Math.floor(Math.random() * options.length)]
   crawl.mission = { id: pick.id, lx: rand(pick.x1 + m, pick.x2 - m) }
@@ -796,7 +796,7 @@ function climbIssue(r, topIds) {
 
 /** 底部貼近工具列、黑熊搆得到側邊的視窗。 */
 function reachableWindows() {
-  const topIds = new Set(crabTops().filter((s) => s.kind === 'window').map((s) => s.id))
+  const topIds = new Set(crawlTops().filter((s) => s.kind === 'window').map((s) => s.id))
   return windowRects().filter((r) => !climbIssue(r, topIds))
 }
 
@@ -904,10 +904,10 @@ function stepFoods(dt) {
     f.vy += GRAVITY * dt
     const y1 = y0 + f.vy * dt
     let hit = null
-    for (const s of crabTops()) {
+    for (const s of crawlTops()) {
       if (y0 <= s.y + 0.5 && y1 >= s.y && x >= s.x1 && x <= s.x2 && (!hit || s.y < hit.y)) hit = s
     }
-    if (!hit && y1 >= groundY()) hit = crabTops()[0]
+    if (!hit && y1 >= groundY()) hit = crawlTops()[0]
     f.sx = x + winOrigin.x
     if (!hit) {
       f.sy = y1 + winOrigin.y
@@ -940,7 +940,7 @@ function updateFood(dt) {
   })
   if (!candidates.length) return
   const r = candidates[Math.floor(Math.random() * candidates.length)]
-  const top = crabTops().find((s) => s.kind === 'window' && s.id === r.id && s.x2 - s.x1 > m * 2)
+  const top = crawlTops().find((s) => s.kind === 'window' && s.id === r.id && s.x2 - s.x1 > m * 2)
   if (top) placeFood(r.id, rand(top.x1 + m, top.x2 - m))
 }
 
@@ -1170,11 +1170,11 @@ function climbDown(r, side) {
     actor.pause = 0.5
     placeOnLoop(path, 0, 0)
   } else {
-    crabFall(side * 90, 0)
+    crawlFall(side * 90, 0)
   }
 }
 
-function stepCrabFree(dt, load) {
+function stepCrawlFree(dt, load) {
   const scale = config.scale
   const e = load / 100
 
@@ -1189,14 +1189,14 @@ function stepCrabFree(dt, load) {
   }
 
   if (crawl.mode !== 'walk') {
-    stepCrabFall(dt)
+    stepCrawlFall(dt)
     return
   }
 
   const shape = loopShape(crawl.loop)
   if (!shape) {
     // 爬著的視窗關掉、縮小或最大化了：掉下去
-    crabFall(0, 0)
+    crawlFall(0, 0)
     return
   }
   const path = loopSegments(shape)
@@ -1204,7 +1204,7 @@ function stepCrabFree(dt, load) {
 
   // 爬著的地方被別的視窗蓋住了（例如使用者把另一個視窗拉到前面）：掉下去
   if (onWindow && coveredAt(crawl.loop.id, actor.x, feetY())) {
-    crabFall(crawl.nx * 60, 0)
+    crawlFall(crawl.nx * 60, 0)
     return
   }
 
@@ -1221,7 +1221,7 @@ function stepCrabFree(dt, load) {
   }
 
   if (crawl.mission) {
-    const target = crabTops().find((s) => s.id === crawl.mission.id && crawl.mission.lx >= s.x1 && crawl.mission.lx <= s.x2)
+    const target = crawlTops().find((s) => s.id === crawl.mission.id && crawl.mission.lx >= s.x1 && crawl.mission.lx <= s.x2)
     if (!target || onWindow) {
       crawl.mission = null
     } else {
@@ -1232,7 +1232,7 @@ function stepCrabFree(dt, load) {
       const remain = Math.abs(delta) * path.total
       if (remain < 3) {
         // 爬到視窗正上方的天花板了：放手跳下去
-        crabFall(0, 0)
+        crawlFall(0, 0)
         return
       }
       speed = Math.min(speed, remain / dt)
@@ -1270,18 +1270,18 @@ function stepCrabFree(dt, load) {
     if (crawl.stayT <= 0) crawl.leaving = true
     // 待夠了，爬到側邊或底部時往外跳下去
     if (crawl.leaving && (Math.abs(pt.nx) > 0.9 || pt.ny > 0.9)) {
-      crabFall(pt.nx * 200 + pt.tx * crawl.move * 60, pt.ny * 120 - 120)
+      crawlFall(pt.nx * 200 + pt.tx * crawl.move * 60, pt.ny * 120 - 120)
     }
   } else if (!crawl.mission && config.perchWindows) {
     crawl.missionT -= dt
     if (crawl.missionT <= 0) {
       crawl.missionT = rand(6, 16) * (1 - 0.5 * e)
-      pickCrabMission()
+      pickCrawlMission()
     }
   }
 }
 
-function stepCrabFall(dt) {
+function stepCrawlFall(dt) {
   const m = halfW() + 4
   const x0 = actor.x
   const y0 = feetY()
@@ -1298,14 +1298,14 @@ function stepCrabFall(dt) {
   // 往下掉時，碰到的第一個上緣就落在那裡
   if (crawl.vy >= 0) {
     let hit = null
-    for (const s of crabTops()) {
+    for (const s of crawlTops()) {
       if (y0 <= s.y + 0.5 && y >= s.y && x >= s.x1 && x <= s.x2 && (!hit || s.y < hit.y)) hit = s
     }
-    if (!hit && y >= groundY()) hit = crabTops()[0]
+    if (!hit && y >= groundY()) hit = crawlTops()[0]
     if (hit) {
       actor.x = x
       actor.lift = groundY() - hit.y
-      if (crabLand(hit, x)) return
+      if (crawlLand(hit, x)) return
     }
   }
   actor.x = x
@@ -1322,9 +1322,9 @@ function updateBlink(dt) {
   }
 }
 
-// ---------------------------------------------------------------- 小鳥
+// ---------------------------------------------------------------- 飛行類（小鳥、黑面琵鷺）
 
-function birdFree() {
+function flyFree() {
   return isFlyer() && roamFree()
 }
 
@@ -1342,7 +1342,7 @@ function groundPerch() {
 /** 現在能停的地方：工具列上緣，加上（到處飛且有開的話）其他視窗沒被蓋住的標題列。 */
 function surfaces() {
   const list = [groundPerch()]
-  if (!birdFree() || !config.perchWindows) return list
+  if (!flyFree() || !config.perchWindows) return list
   const minLen = halfW() * 2 + 10
   const minY = Math.max(cur.top, 0) + topH() + LABEL_ROOM
   for (const p of perchesScreen) {
@@ -1365,7 +1365,7 @@ function rand(a, b) {
 }
 
 function takeoffDelay(e, hyper) {
-  const base = birdFree() ? rand(4, 12) : rand(6, 15)
+  const base = flyFree() ? rand(4, 12) : rand(6, 15)
   return Math.max(0.4, base * (1 - 0.85 * Math.pow(e, 0.7)) * (1 - 0.5 * hyper))
 }
 
@@ -1404,7 +1404,7 @@ function takeOff(awayX) {
   bird.vy = -rand(160, 240 + 220 * e)
   actor.dir = dir
   const { hyper } = energyOf(load)
-  bird.route = birdFree()
+  bird.route = flyFree()
     ? Math.floor(rand(1, 2.5 + 3 * e + 5 * hyper))
     : Math.floor(rand(0, 1.5 + 3 * e + 4 * hyper))
 }
@@ -1414,7 +1414,7 @@ function nextTarget() {
   const b = flightBounds()
   if (bird.route > 0) {
     bird.route--
-    const low = birdFree() ? b.top : Math.max(b.top, b.bottom - 220 * config.scale)
+    const low = flyFree() ? b.top : Math.max(b.top, b.bottom - 220 * config.scale)
     bird.target = { x: rand(b.left, b.right), y: rand(low, b.bottom - 40), perch: null }
     return
   }
@@ -1476,7 +1476,7 @@ function pickActivity(e, hyper) {
   if (act === 'preen') bird.headTiltTarget = (Math.random() < 0.5 ? -1 : 1) * 0.7
 }
 
-function stepBird(dt, load) {
+function stepFly(dt, load) {
   const { e, hyper } = energyOf(load)
   bird.time += dt
 
@@ -1613,7 +1613,7 @@ function stepFlying(dt, e, hyper) {
   const dy = t.y - y
   const dist = Math.hypot(dx, dy) || 1
 
-  const maxV = (birdFree() ? 170 + 520 * e : 120 + 330 * e) + 260 * hyper
+  const maxV = (flyFree() ? 170 + 520 * e : 120 + 330 * e) + 260 * hyper
   const want = t.perch ? Math.min(maxV, dist * 2.4 + 30) : maxV
   let dvx = (dx / dist) * want
   let dvy = (dy / dist) * want
@@ -1674,7 +1674,7 @@ function stepFlying(dt, e, hyper) {
   }
 }
 
-// ---------------------------------------------------------------- 綠蠵龜（游泳類）
+// ---------------------------------------------------------------- 游泳類（綠蠵龜）
 
 const WATER_DEPTH = 14     // 淺水的深度（px，乘上 scale），龜殼大概泡進一半
 const WATER_WIDTH = 300    // 跟著綠蠵龜的那片淺水有多寬（px，乘上 scale）
@@ -1705,11 +1705,11 @@ const turtle = {
   seed: Math.random() * 100,
 }
 
-function turtleFree() {
+function swimFree() {
   return isSwimmer() && roamFree()
 }
 
-function setTurtlePos(x, y) {
+function setSwimPos(x, y) {
   actor.x = x
   actor.lift = groundY() - y
 }
@@ -1775,7 +1775,7 @@ function swimToward(tx, ty, maxV, dt, hyper, arrive) {
   const steer = 1.4 + 2 * hyper
   turtle.vx += (dvx - turtle.vx) * Math.min(1, dt * steer)
   turtle.vy += (dvy - turtle.vy) * Math.min(1, dt * steer)
-  setTurtlePos(actor.x + turtle.vx * dt, y + turtle.vy * dt)
+  setSwimPos(actor.x + turtle.vx * dt, y + turtle.vy * dt)
   return dist
 }
 
@@ -1790,7 +1790,7 @@ function nextSwimTarget() {
   turtle.target = { kind: 'wander', x: rand(cur.left + m, cur.right - m), y: rand(top, groundY() - topH() * 2) }
 }
 
-function stepTurtle(dt, load) {
+function stepSwim(dt, load) {
   const s = config.scale
   const e = load / 100
   const hyper = clamp((load - 70) / 30, 0, 1)
@@ -1814,7 +1814,7 @@ function stepTurtle(dt, load) {
   }
 
   // 從整個畫面切回工具列時，游在半空中的就往下掉
-  if (!turtleFree() && turtle.mode === 'swim') turtle.mode = 'fall'
+  if (!swimFree() && turtle.mode === 'swim') turtle.mode = 'fall'
 
   switch (turtle.mode) {
     case 'fall': {
@@ -1886,7 +1886,7 @@ function stepTurtle(dt, load) {
       if (e > 0.5 && Math.random() < dt * (1 + 4 * hyper)) splash(actor.x + actor.dir * 22 * s, groundY() - WATER_DEPTH * s, 4, 0.7)
       turtle.timer -= dt
       if (turtle.timer <= 0) {
-        if (turtleFree()) {
+        if (swimFree()) {
           // 游出淺水，往上游到畫面上
           turtle.mode = 'swim'
           turtle.timer = rand(14, 30) * (1 - 0.4 * e)
@@ -1925,8 +1925,8 @@ function stepTurtle(dt, load) {
       }
       // 邊界
       actor.x = clamp(actor.x, cur.left + m, cur.right - m)
-      if (feetY() < cur.top + topH() + 10) setTurtlePos(actor.x, cur.top + topH() + 10)
-      if (feetY() > groundY()) setTurtlePos(actor.x, groundY())
+      if (feetY() < cur.top + topH() + 10) setSwimPos(actor.x, cur.top + topH() + 10)
+      if (feetY() > groundY()) setSwimPos(actor.x, groundY())
 
       if (t.kind === 'wander' && dist < 40) {
         turtle.target = null
@@ -1936,7 +1936,7 @@ function stepTurtle(dt, load) {
         turtle.waterX = actor.x
         turtle.timer = rand(8, 16) * (1 - 0.4 * e)
         turtle.target = null
-        setTurtlePos(actor.x, groundY())
+        setSwimPos(actor.x, groundY())
         splash(actor.x, groundY() - WATER_DEPTH * s, 12)
       } else if (turtle.timer < -25) {
         turtle.target = null // 太久了還沒到（目標一直跑掉），換一個
@@ -1950,7 +1950,7 @@ function stepTurtle(dt, load) {
 }
 
 /** 被戳到：嚇一跳、加速游走（海龜不會縮頭）。 */
-function startleTurtle(fromX) {
+function startleSwimmer(fromX) {
   turtle.flinch = 1
   turtle.boost = 1.4
   actor.pause = 0
@@ -1964,7 +1964,7 @@ function startleTurtle(fromX) {
 }
 
 /** 綠蠵龜這一格的畫面：淺水（後）→ 烏龜 → 淺水（前）→ 水花泡泡；在畫面上游泳時身邊有一圈淡淡的水光。 */
-function renderTurtle(now, rx, ry) {
+function renderSwimmer(now, rx, ry) {
   const art = ART.turtle
   const s = config.scale
   const load = clamp(metrics.load || 0, 0, 100)
@@ -2088,7 +2088,7 @@ function render(now) {
   }
 
   if (isSwimmer()) {
-    renderTurtle(now, rx, ry)
+    renderSwimmer(now, rx, ry)
     return
   }
 
@@ -2128,7 +2128,7 @@ function render(now) {
 
   if (crawlFree()) {
     // 繞著身體中心轉：貼在牆上、倒掛在天花板、在空中翻正
-    const c = crabCenter()
+    const c = crawlCenter()
     ctx.translate(c.x - rx, c.y - ry)
     ctx.rotate(crawl.angle)
     ctx.translate(0, topH() * 0.5)
@@ -2225,7 +2225,7 @@ function updateLabel() {
   let ly
   if (crawlFree()) {
     // 倒掛在天花板時標籤放在身體下面，其他時候放在身體上面
-    const c = crabCenter()
+    const c = crawlCenter()
     ax = c.x
     ly = crawl.ny > 0.5 ? c.y + topH() * 0.5 + 8 : Math.max(2, c.y - topH() * 0.5 - 26)
   } else {
@@ -2254,7 +2254,7 @@ function fmt(v, unit) {
 // 視窗預設整片穿透（工具列和其他視窗才點得到），只有游標壓在吉祥物身上時才短暫接管。
 function overMascot(px, py) {
   if (crawlFree()) {
-    const c = crabCenter()
+    const c = crawlCenter()
     const r = Math.max(halfW(), topH() * 0.5) * 0.85
     return Math.abs(px - c.x) <= r && Math.abs(py - c.y) <= r
   }
@@ -2337,7 +2337,7 @@ window.addEventListener('mouseup', (e) => {
   const margin = halfW() + 6
   actor.x = clamp(actor.x, cur.left + margin, cur.right - margin)
   if (isSwimmer()) {
-    if (turtleFree()) {
+    if (swimFree()) {
       // 整個畫面就是海：放開就從那裡繼續游
       turtle.mode = 'swim'
       turtle.target = null
@@ -2354,7 +2354,7 @@ window.addEventListener('mouseup', (e) => {
     }
   } else if (crawlFree()) {
     // 放開就往下掉，落在第一個碰到的視窗頂端或工具列上
-    crabFall(0, 0)
+    crawlFall(0, 0)
     if (expanded) dropOnDisplay(cur.id)
   } else if (isFlyer()) {
     if (actor.lift <= 0) {
@@ -2389,7 +2389,7 @@ window.addEventListener('click', (e) => {
     return
   }
   if (isSwimmer()) {
-    startleTurtle(e.clientX)
+    startleSwimmer(e.clientX)
     return
   }
   if (crawlFree()) {
